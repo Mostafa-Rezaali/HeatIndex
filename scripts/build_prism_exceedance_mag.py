@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tmp-root", default="_HI_tmp")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--threshold-workers", type=int, default=1)
+    p.add_argument("--slice-workers", type=int, default=1)
     p.add_argument("--block-rows", type=int, default=64)
     p.add_argument("--keep-python-cache", action="store_true")
     return p.parse_args()
@@ -204,6 +205,53 @@ def threshold_block(
     return r0, r1, block, warnings
 
 
+def mag_slice_for_day(
+    d: datetime,
+    tmp_root: Path,
+    build_hi_mag: bool,
+    build_t_mag: bool,
+    thr_hi_month: np.ndarray | None,
+    thr_t_month: np.ndarray | None,
+    nlat: int,
+    nlon: int,
+) -> tuple[int, np.ndarray | None, np.ndarray | None, list[str]]:
+    ds = d.strftime("%Y%m%d")
+    warnings: list[str] = []
+    time_value = yyyymmdd(d)
+    hi_mag = None
+    t_mag = None
+    mpath = tmp_root / f"HI_{ds}.npz"
+
+    if mpath.is_file():
+        try:
+            hi = load_daily_array(mpath, "HI") if build_hi_mag else None
+            t2 = load_daily_array(mpath, "T2") if build_t_mag else None
+        except Exception as exc:
+            warnings.append(f"Unreadable cache {ds}; writing date + NaN slice. {exc}")
+            hi = None
+            t2 = None
+    else:
+        warnings.append(f"Missing cache {ds}; writing date + NaN slice.")
+        hi = None
+        t2 = None
+
+    if build_hi_mag:
+        if hi is not None and thr_hi_month is not None:
+            hi_mag = (hi - thr_hi_month).astype(np.float32)
+            hi_mag[(hi_mag <= 0) | np.isnan(hi)] = np.nan
+        else:
+            hi_mag = np.full((nlat, nlon), np.nan, dtype=np.float32)
+
+    if build_t_mag:
+        if t2 is not None and thr_t_month is not None:
+            t_mag = (t2 - thr_t_month).astype(np.float32)
+            t_mag[(t_mag <= 0) | np.isnan(t2)] = np.nan
+        else:
+            t_mag = np.full((nlat, nlon), np.nan, dtype=np.float32)
+
+    return time_value, hi_mag, t_mag, warnings
+
+
 def create_mag_nc(
     out_nc: Path,
     varname: str,
@@ -313,45 +361,69 @@ def main() -> None:
         ds_hi = create_mag_nc(out_mag_hi, "HI_EXCDMAG", nlat, nlon, len(dates_mjjas), lat, lon, args.pct, y1, y2, f"Heat Index (from {args.t2m_var})") if build_hi_mag else None
         ds_t = create_mag_nc(out_mag_t, "T_EXCDMAG", nlat, nlon, len(dates_mjjas), lat, lon, args.pct, y1, y2, f"Temperature ({args.t2m_var})") if build_t_mag else None
         nan_slice = np.full((nlat, nlon), np.nan, dtype=np.float32)
+        slice_workers = max(1, int(args.slice_workers))
 
         try:
-            for ti, d in enumerate(dates_mjjas):
-                ds = d.strftime("%Y%m%d")
-                mpath = tmp_root / f"HI_{ds}.npz"
-                if mpath.is_file():
-                    try:
-                        hi = load_daily_array(mpath, "HI")
-                        t2 = load_daily_array(mpath, "T2")
-                    except Exception as exc:
-                        print(f"Unreadable mat {ds}; writing date + NaN slice. {exc}")
-                        hi = None
-                        t2 = None
+            print(f"  slice prep workers: {slice_workers}")
+            executor = ThreadPoolExecutor(max_workers=slice_workers) if slice_workers > 1 else None
+            for batch_start in range(0, len(dates_mjjas), slice_workers):
+                batch = list(enumerate(dates_mjjas[batch_start : batch_start + slice_workers], start=batch_start))
+                if executor is None:
+                    results = [
+                        (
+                            ti,
+                            mag_slice_for_day(
+                                d,
+                                tmp_root,
+                                build_hi_mag,
+                                build_t_mag,
+                                thr_hi.get(d.month) if build_hi_mag else None,
+                                thr_t.get(d.month) if build_t_mag else None,
+                                nlat,
+                                nlon,
+                            ),
+                        )
+                        for ti, d in batch
+                    ]
                 else:
-                    hi = None
-                    t2 = None
+                    futs = {
+                        executor.submit(
+                            mag_slice_for_day,
+                            d,
+                            tmp_root,
+                            build_hi_mag,
+                            build_t_mag,
+                            thr_hi.get(d.month) if build_hi_mag else None,
+                            thr_t.get(d.month) if build_t_mag else None,
+                            nlat,
+                            nlon,
+                        ): ti
+                        for ti, d in batch
+                    }
+                    results = [(futs[fut], fut.result()) for fut in as_completed(futs)]
 
-                if hi is not None and t2 is not None:
+                for ti, (time_value, mag, mag_t, warnings) in sorted(results, key=lambda item: item[0]):
+                    d = dates_mjjas[ti]
+                    ds = d.strftime("%Y%m%d")
+                    for warning in warnings:
+                        print(warning)
                     if ds_hi is not None:
-                        mag = (hi - thr_hi[d.month]).astype(np.float32)
-                        mag[(mag <= 0) | np.isnan(hi)] = np.nan
-                        retry(lambda: ds_hi["time"].__setitem__(ti, yyyymmdd(d)), f"time {ds}")
-                        retry(lambda: ds_hi["HI_EXCDMAG"].__setitem__((slice(None), slice(None), ti), mag), f"HI_EXCDMAG {ds}")
+                        retry(lambda ti=ti, time_value=time_value: ds_hi["time"].__setitem__(ti, time_value), f"time {ds}")
+                        retry(
+                            lambda ti=ti, mag=mag: ds_hi["HI_EXCDMAG"].__setitem__((slice(None), slice(None), ti), mag if mag is not None else nan_slice),
+                            f"HI_EXCDMAG {ds}",
+                        )
                     if ds_t is not None:
-                        mag_t = (t2 - thr_t[d.month]).astype(np.float32)
-                        mag_t[(mag_t <= 0) | np.isnan(t2)] = np.nan
-                        retry(lambda: ds_t["time"].__setitem__(ti, yyyymmdd(d)), f"time {ds}")
-                        retry(lambda: ds_t["T_EXCDMAG"].__setitem__((slice(None), slice(None), ti), mag_t), f"T_EXCDMAG {ds}")
-                else:
-                    print(f"Missing mat {ds}; writing date + NaN slice.")
-                    if ds_hi is not None:
-                        ds_hi["time"][ti] = yyyymmdd(d)
-                        ds_hi["HI_EXCDMAG"][:, :, ti] = nan_slice
-                    if ds_t is not None:
-                        ds_t["time"][ti] = yyyymmdd(d)
-                        ds_t["T_EXCDMAG"][:, :, ti] = nan_slice
-                if ti == 0 or (ti + 1) % 50 == 0 or ti + 1 == len(dates_mjjas):
-                    print(f"  wrote slice {ti + 1}/{len(dates_mjjas)} ({ds})")
+                        retry(lambda ti=ti, time_value=time_value: ds_t["time"].__setitem__(ti, time_value), f"time {ds}")
+                        retry(
+                            lambda ti=ti, mag_t=mag_t: ds_t["T_EXCDMAG"].__setitem__((slice(None), slice(None), ti), mag_t if mag_t is not None else nan_slice),
+                            f"T_EXCDMAG {ds}",
+                        )
+                    if ti == 0 or (ti + 1) % 50 == 0 or ti + 1 == len(dates_mjjas):
+                        print(f"  wrote slice {ti + 1}/{len(dates_mjjas)} ({ds})")
         finally:
+            if "executor" in locals() and executor is not None:
+                executor.shutdown()
             if ds_hi is not None:
                 ds_hi.close()
             if ds_t is not None:

@@ -16,6 +16,8 @@ CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
+APPEND_WORKERS=${APPEND_WORKERS:-64}
+APPEND_CHUNK_SIZE=${APPEND_CHUNK_SIZE:-100}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
@@ -35,6 +37,8 @@ export PYTHONPATH="$CODE_DIR"
 
 cd "$DATA_DIR"
 "$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
-  --zip-buffer-cells "$ZIP_BUFFER_CELLS"
+  --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
+  --workers "$APPEND_WORKERS" \
+  --chunk-size "$APPEND_CHUNK_SIZE"
 
 echo "HEATINDEX HOSPITAL ADMITTANCE HSCI APPEND COMPLETE"

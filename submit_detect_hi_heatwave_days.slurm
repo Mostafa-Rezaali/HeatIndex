@@ -17,6 +17,7 @@ DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-64}
+DETECT_WRITE_WORKERS=${DETECT_WRITE_WORKERS:-64}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
@@ -39,6 +40,7 @@ cd "$DATA_DIR"
 "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
   --pct "$PCT" \
   --area-mat "$AREA_MAT" \
-  --workers "$DETECT_WORKERS"
+  --workers "$DETECT_WORKERS" \
+  --write-workers "$DETECT_WRITE_WORKERS"
 
 echo "HEATINDEX HI HEATWAVE DAY DETECTION COMPLETE"

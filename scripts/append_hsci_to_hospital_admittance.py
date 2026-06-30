@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
@@ -26,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--zip-buffer-cells", type=int, default=1)
     p.add_argument("--out-csv", default="Hospital_Admittance_with_HSCI.csv")
     p.add_argument("--out-pickle", default="")
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--chunk-size", type=int, default=100)
     return p.parse_args()
 
 
@@ -310,6 +313,132 @@ def make_exposure_category(x):
     return cat
 
 
+_HOSPITAL_CONTEXT = {}
+
+
+def init_hospital_worker(context):
+    global _HOSPITAL_CONTEXT
+    _HOSPITAL_CONTEXT = context
+
+
+def compute_patient_values(i, zc, d0, context=None):
+    ctx = _HOSPITAL_CONTEXT if context is None else context
+    a = ctx["args"]
+    masks = ctx["masks"]
+    hi_contexts = ctx["hi_contexts"]
+    legacy_hi = ctx["legacy_hi"]
+    hsci_t_by_date = ctx["hsci_t_by_date"]
+    hsci_hi_by_date = ctx["hsci_hi_by_date"]
+    idx_hw_t = ctx["idx_hw_t"]
+    idx_daily_hi = ctx["idx_daily_hi"]
+    dates_daily_hi = ctx["dates_daily_hi"]
+    lat_grid = ctx["lat_grid"]
+    lon_grid = ctx["lon_grid"]
+
+    values = {}
+    zm = masks.get("z" + str(zc).strip())
+    if zm is None or pd.isna(d0):
+        return i, values
+    d0 = pd.Timestamp(d0).normalize()
+
+    values["HSCI_T_admit"] = hsci_t_by_date.get(d0, np.nan)
+    values["HSCI_HI_admit"] = hsci_hi_by_date.get(d0, np.nan)
+    values["zcta_EXCD_T_admit"] = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm, d0, True)
+    values["zcta_EXCD_HI_admit"] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, d0, False)
+    values["miss_excd_T_admit"] = float(np.isnan(values["zcta_EXCD_T_admit"]))
+    values["miss_excd_HI_admit"] = float(np.isnan(values["zcta_EXCD_HI_admit"]))
+
+    if values["miss_excd_HI_admit"]:
+        back_days, space_km, excd_val = find_backward_nearest_heatwave_cell(
+            legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm, d0, lat_grid, lon_grid
+        )
+        values["nearest_hw_back_days_HI_admit_nan"] = back_days
+        values["nearest_hw_space_km_HI_admit_nan"] = space_km
+        values["nearest_hw_excd_HI_admit_nan"] = excd_val
+
+    for pct, hi_ctx in hi_contexts.items():
+        s = hi_ctx["suffix"]
+        values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
+        values[f"event_duration_HI_admit_anchor_{s}"] = anchored_heat_duration_with_grace(hi_ctx, zm, d0)
+        values[f"days_heatwave_HI_30d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 30)
+        values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 21)
+        values[f"days_heatwave_HI_14d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 14)
+
+    acc_hsci_t = acc_hsci_hi = 0.0
+    acc_excd_t = acc_excd_hi = 0.0
+    acc_hsci_t_3 = acc_hsci_hi_3 = 0.0
+    acc_excd_t_3 = acc_excd_hi_3 = 0.0
+    cnt_excd_t_7 = cnt_excd_hi_7 = 0
+    cnt_excd_t_3 = cnt_excd_hi_3 = 0
+    mx_excd_t_7 = mx_excd_hi_7 = np.nan
+    mx_excd_t_3 = mx_excd_hi_3 = np.nan
+
+    for offset in range(-7, 0):
+        dd = d0 + pd.Timedelta(days=offset)
+        vt = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm, dd, True)
+        if not np.isnan(vt):
+            acc_excd_t += vt
+            if vt > 0:
+                cnt_excd_t_7 += 1
+                mx_excd_t_7 = vt if np.isnan(mx_excd_t_7) else max(mx_excd_t_7, vt)
+            if offset >= -3:
+                acc_excd_t_3 += vt
+                if vt > 0:
+                    cnt_excd_t_3 += 1
+                    mx_excd_t_3 = vt if np.isnan(mx_excd_t_3) else max(mx_excd_t_3, vt)
+
+        v = hsci_t_by_date.get(dd)
+        if v is not None and np.isfinite(v):
+            acc_hsci_t += v
+            if offset >= -3:
+                acc_hsci_t_3 += v
+
+        v = hsci_hi_by_date.get(dd)
+        if v is not None and np.isfinite(v):
+            acc_hsci_hi += v
+            if offset >= -3:
+                acc_hsci_hi_3 += v
+
+        vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, dd, False)
+        if not np.isnan(vhi):
+            acc_excd_hi += vhi
+            if vhi > 0:
+                cnt_excd_hi_7 += 1
+                mx_excd_hi_7 = vhi if np.isnan(mx_excd_hi_7) else max(mx_excd_hi_7, vhi)
+            if offset >= -3:
+                acc_excd_hi_3 += vhi
+                if vhi > 0:
+                    cnt_excd_hi_3 += 1
+                    mx_excd_hi_3 = vhi if np.isnan(mx_excd_hi_3) else max(mx_excd_hi_3, vhi)
+
+    values["HSCI_T_3d_prior"] = acc_hsci_t_3
+    values["HSCI_HI_3d_prior"] = acc_hsci_hi_3
+    values["zcta_EXCD_T_3d_prior"] = acc_excd_t_3
+    values["zcta_EXCD_HI_3d_prior"] = acc_excd_hi_3
+    values["HSCI_T_7d_prior"] = acc_hsci_t
+    values["HSCI_HI_7d_prior"] = acc_hsci_hi
+    values["zcta_EXCD_T_7d_prior"] = acc_excd_t
+    values["zcta_EXCD_HI_7d_prior"] = acc_excd_hi
+    values["days_excd_T_3d_prior"] = cnt_excd_t_3
+    values["days_excd_HI_3d_prior"] = cnt_excd_hi_3
+    values["days_excd_T_7d_prior"] = cnt_excd_t_7
+    values["days_excd_HI_7d_prior"] = cnt_excd_hi_7
+    values["max_excd_T_3d_prior"] = coerce_nan_max_to_zero(mx_excd_t_3)
+    values["max_excd_HI_3d_prior"] = coerce_nan_max_to_zero(mx_excd_hi_3)
+    values["max_excd_T_7d_prior"] = coerce_nan_max_to_zero(mx_excd_t_7)
+    values["max_excd_HI_7d_prior"] = coerce_nan_max_to_zero(mx_excd_hi_7)
+    return i, values
+
+
+def process_patient_chunk(rows):
+    return [compute_patient_values(i, zc, d0) for i, zc, d0 in rows]
+
+
+def patient_chunks(rows, chunk_size):
+    for start in range(0, len(rows), chunk_size):
+        yield rows[start : start + chunk_size]
+
+
 def main() -> None:
     args = parse_args()
 
@@ -380,103 +509,48 @@ def main() -> None:
         cols[f"days_heatwave_HI_21d_prior_{s}"] = np.zeros(n_p)
         cols[f"days_heatwave_HI_14d_prior_{s}"] = np.zeros(n_p)
 
-    for i in range(n_p):
-        zc = str(p.at[i, "zip5"]).strip()
-        zm = masks.get("z" + zc)
-        d0 = admit_dt.iloc[i]
-        if zm is None or pd.isna(d0):
-            continue
-        d0 = pd.Timestamp(d0).normalize()
+    worker_context = {
+        "args": {
+            "hw_nc_t": args.hw_nc_t,
+        },
+        "masks": masks,
+        "hi_contexts": hi_contexts,
+        "legacy_hi": legacy_hi,
+        "hsci_t_by_date": hsci_t_by_date,
+        "hsci_hi_by_date": hsci_hi_by_date,
+        "idx_hw_t": idx_hw_t,
+        "idx_daily_hi": idx_daily_hi,
+        "dates_daily_hi": dates_daily_hi,
+        "lat_grid": lat_grid,
+        "lon_grid": lon_grid,
+    }
+    rows = [(i, str(p.at[i, "zip5"]).strip(), admit_dt.iloc[i]) for i in range(n_p)]
+    worker_count = max(1, int(args.workers))
+    chunk_size = max(1, int(args.chunk_size))
+    print(f"Patient exposure workers: {worker_count}; chunk size: {chunk_size}")
 
-        cols["HSCI_T_admit"][i] = hsci_t_by_date.get(d0, np.nan)
-        cols["HSCI_HI_admit"][i] = hsci_hi_by_date.get(d0, np.nan)
-        cols["zcta_EXCD_T_admit"][i] = read_zip_avg(args.hw_nc_t, "EXCD", idx_hw_t, zm, d0, True)
-        cols["zcta_EXCD_HI_admit"][i] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, d0, False)
-        cols["miss_excd_T_admit"][i] = float(np.isnan(cols["zcta_EXCD_T_admit"][i]))
-        cols["miss_excd_HI_admit"][i] = float(np.isnan(cols["zcta_EXCD_HI_admit"][i]))
+    def store_result(i, values):
+        for name, value in values.items():
+            cols[name][i] = value
 
-        if cols["miss_excd_HI_admit"][i]:
-            back_days, space_km, excd_val = find_backward_nearest_heatwave_cell(
-                legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm, d0, lat_grid, lon_grid
-            )
-            cols["nearest_hw_back_days_HI_admit_nan"][i] = back_days
-            cols["nearest_hw_space_km_HI_admit_nan"][i] = space_km
-            cols["nearest_hw_excd_HI_admit_nan"][i] = excd_val
-
-        for pct, ctx in hi_contexts.items():
-            s = ctx["suffix"]
-            cols[f"HSCI_HI_30d_prior_{s}"][i] = sum_hsci_prior(ctx["hsci_by_date"], d0, 30)
-            cols[f"event_duration_HI_admit_anchor_{s}"][i] = anchored_heat_duration_with_grace(ctx, zm, d0)
-            cols[f"days_heatwave_HI_30d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 30)
-            cols[f"days_heatwave_HI_21d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 21)
-            cols[f"days_heatwave_HI_14d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 14)
-
-        acc_hsci_t = acc_hsci_hi = 0.0
-        acc_excd_t = acc_excd_hi = 0.0
-        acc_hsci_t_3 = acc_hsci_hi_3 = 0.0
-        acc_excd_t_3 = acc_excd_hi_3 = 0.0
-        cnt_excd_t_7 = cnt_excd_hi_7 = 0
-        cnt_excd_t_3 = cnt_excd_hi_3 = 0
-        mx_excd_t_7 = mx_excd_hi_7 = np.nan
-        mx_excd_t_3 = mx_excd_hi_3 = np.nan
-
-        for offset in range(-7, 0):
-            dd = d0 + pd.Timedelta(days=offset)
-            vt = read_zip_avg(args.hw_nc_t, "EXCD", idx_hw_t, zm, dd, True)
-            if not np.isnan(vt):
-                acc_excd_t += vt
-                if vt > 0:
-                    cnt_excd_t_7 += 1
-                    mx_excd_t_7 = vt if np.isnan(mx_excd_t_7) else max(mx_excd_t_7, vt)
-                if offset >= -3:
-                    acc_excd_t_3 += vt
-                    if vt > 0:
-                        cnt_excd_t_3 += 1
-                        mx_excd_t_3 = vt if np.isnan(mx_excd_t_3) else max(mx_excd_t_3, vt)
-
-            v = hsci_t_by_date.get(dd)
-            if v is not None and np.isfinite(v):
-                acc_hsci_t += v
-                if offset >= -3:
-                    acc_hsci_t_3 += v
-
-            v = hsci_hi_by_date.get(dd)
-            if v is not None and np.isfinite(v):
-                acc_hsci_hi += v
-                if offset >= -3:
-                    acc_hsci_hi_3 += v
-
-            vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, dd, False)
-            if not np.isnan(vhi):
-                acc_excd_hi += vhi
-                if vhi > 0:
-                    cnt_excd_hi_7 += 1
-                    mx_excd_hi_7 = vhi if np.isnan(mx_excd_hi_7) else max(mx_excd_hi_7, vhi)
-                if offset >= -3:
-                    acc_excd_hi_3 += vhi
-                    if vhi > 0:
-                        cnt_excd_hi_3 += 1
-                        mx_excd_hi_3 = vhi if np.isnan(mx_excd_hi_3) else max(mx_excd_hi_3, vhi)
-
-        cols["HSCI_T_3d_prior"][i] = acc_hsci_t_3
-        cols["HSCI_HI_3d_prior"][i] = acc_hsci_hi_3
-        cols["zcta_EXCD_T_3d_prior"][i] = acc_excd_t_3
-        cols["zcta_EXCD_HI_3d_prior"][i] = acc_excd_hi_3
-        cols["HSCI_T_7d_prior"][i] = acc_hsci_t
-        cols["HSCI_HI_7d_prior"][i] = acc_hsci_hi
-        cols["zcta_EXCD_T_7d_prior"][i] = acc_excd_t
-        cols["zcta_EXCD_HI_7d_prior"][i] = acc_excd_hi
-        cols["days_excd_T_3d_prior"][i] = cnt_excd_t_3
-        cols["days_excd_HI_3d_prior"][i] = cnt_excd_hi_3
-        cols["days_excd_T_7d_prior"][i] = cnt_excd_t_7
-        cols["days_excd_HI_7d_prior"][i] = cnt_excd_hi_7
-        cols["max_excd_T_3d_prior"][i] = coerce_nan_max_to_zero(mx_excd_t_3)
-        cols["max_excd_HI_3d_prior"][i] = coerce_nan_max_to_zero(mx_excd_hi_3)
-        cols["max_excd_T_7d_prior"][i] = coerce_nan_max_to_zero(mx_excd_t_7)
-        cols["max_excd_HI_7d_prior"][i] = coerce_nan_max_to_zero(mx_excd_hi_7)
-
-        if i == 0 or (i + 1) % 100 == 0 or i + 1 == n_p:
-            print(f"  Processed {i + 1}/{n_p}  (zip {zc}, {zm.n_cells} cells, admit {d0.date()})")
+    processed = 0
+    if worker_count == 1:
+        for row in rows:
+            i, values = compute_patient_values(*row, context=worker_context)
+            store_result(i, values)
+            processed += 1
+            if processed == 1 or processed % 100 == 0 or processed == n_p:
+                print(f"  Processed {processed}/{n_p}")
+    else:
+        chunks = list(patient_chunks(rows, chunk_size))
+        with ProcessPoolExecutor(max_workers=worker_count, initializer=init_hospital_worker, initargs=(worker_context,)) as ex:
+            futs = [ex.submit(process_patient_chunk, chunk) for chunk in chunks]
+            for fut in as_completed(futs):
+                for i, values in fut.result():
+                    store_result(i, values)
+                    processed += 1
+                if processed == n_p or processed % max(100, chunk_size) < chunk_size:
+                    print(f"  Processed {processed}/{n_p}")
 
     for name, values in cols.items():
         p[name] = values

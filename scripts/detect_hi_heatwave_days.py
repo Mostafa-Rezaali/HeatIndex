@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cluster-cutoff-km", type=float, default=1000.0)
     p.add_argument("--min-duration", type=int, default=3)
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--write-workers", type=int, default=1)
     p.add_argument("--keep-checkpoints", action="store_true")
     return p.parse_args()
 
@@ -353,6 +354,24 @@ def create_output_nc(path: Path, ny: int, nx: int, n_hw: int, x: np.ndarray, y: 
     return ds
 
 
+def build_excd_output_slice(
+    k: int,
+    mag_nc: str,
+    ti_nc: int,
+    ny: int,
+    nx: int,
+    idx_u: np.ndarray,
+) -> tuple[int, np.ndarray]:
+    with netCDF4.Dataset(mag_nc) as src:
+        excd = masked_to_nan(src["HI_EXCDMAG"][:, :, ti_nc]).astype(np.float32)
+    if len(idx_u):
+        keep = restore_mask_from_indices((ny, nx), idx_u)
+        excd[~keep] = np.nan
+    else:
+        excd[:] = np.nan
+    return k, excd
+
+
 def main() -> None:
     args = parse_args()
     pct = args.pct
@@ -498,23 +517,50 @@ def main() -> None:
         with write_ckpt.open("wb") as f:
             pickle.dump({"last_written": -1, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
 
+    write_workers = max(1, int(args.write_workers))
     print(f"Writing EXCD slices {ti_start + 1}..{n_hw} of {n_hw} to {out_nc} ...")
-    with netCDF4.Dataset(mag_nc) as src, netCDF4.Dataset(out_nc, "a") as dst:
-        for k in range(ti_start, n_hw):
-            i = int(hw_idx[k])
-            ti_nc = int(idx_all[i])
-            excd = masked_to_nan(src["HI_EXCDMAG"][:, :, ti_nc]).astype(np.float32)
-            idx_u = det["unionIdx_hw"][k]
-            if len(idx_u):
-                keep = restore_mask_from_indices((ny, nx), idx_u)
-                excd[~keep] = np.nan
-            else:
-                excd[:] = np.nan
-            retry(lambda k=k, excd=excd: dst["EXCD"].__setitem__((slice(None), slice(None), k), excd), f"EXCD slice {k + 1}")
-            if (k + 1) % 25 == 0 or k == ti_start or k + 1 == n_hw:
-                with write_ckpt.open("wb") as f:
-                    pickle.dump({"last_written": k, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
-                print(f"Wrote {k + 1:5d}/{n_hw:5d} {det['hw_dates'][k]:%Y-%m-%d}")
+    print(f"  EXCD slice prep workers: {write_workers}")
+    executor = None if write_workers == 1 else ProcessPoolExecutor(max_workers=write_workers)
+    try:
+        with netCDF4.Dataset(out_nc, "a") as dst:
+            for batch_start in range(ti_start, n_hw, write_workers):
+                batch_stop = min(n_hw, batch_start + write_workers)
+                if executor is None:
+                    results = [
+                        build_excd_output_slice(
+                            k,
+                            str(mag_nc),
+                            int(idx_all[int(hw_idx[k])]),
+                            ny,
+                            nx,
+                            det["unionIdx_hw"][k],
+                        )
+                        for k in range(batch_start, batch_stop)
+                    ]
+                else:
+                    futs = [
+                        executor.submit(
+                            build_excd_output_slice,
+                            k,
+                            str(mag_nc),
+                            int(idx_all[int(hw_idx[k])]),
+                            ny,
+                            nx,
+                            det["unionIdx_hw"][k],
+                        )
+                        for k in range(batch_start, batch_stop)
+                    ]
+                    results = [fut.result() for fut in as_completed(futs)]
+
+                for k, excd in sorted(results, key=lambda item: item[0]):
+                    retry(lambda k=k, excd=excd: dst["EXCD"].__setitem__((slice(None), slice(None), k), excd), f"EXCD slice {k + 1}")
+                    if (k + 1) % 25 == 0 or k == ti_start or k + 1 == n_hw:
+                        with write_ckpt.open("wb") as f:
+                            pickle.dump({"last_written": k, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
+                        print(f"Wrote {k + 1:5d}/{n_hw:5d} {det['hw_dates'][k]:%Y-%m-%d}")
+    finally:
+        if executor is not None:
+            executor.shutdown()
     print("Done writing EXCD stack.")
     if not args.keep_checkpoints:
         for path in (det_ckpt, write_ckpt):

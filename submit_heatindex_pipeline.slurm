@@ -20,14 +20,18 @@ PCTS=${PCTS:-90,95}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-64}
 THRESHOLD_WORKERS=${THRESHOLD_WORKERS:-16}
+SLICE_WORKERS=${SLICE_WORKERS:-64}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
 DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
 DATES_VAR=${DATES_VAR:-dates}
 
 DETECT_WORKERS=${DETECT_WORKERS:-64}
+DETECT_WRITE_WORKERS=${DETECT_WRITE_WORKERS:-64}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
+APPEND_WORKERS=${APPEND_WORKERS:-64}
+APPEND_CHUNK_SIZE=${APPEND_CHUNK_SIZE:-100}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
@@ -63,6 +67,7 @@ for PCT in "${PCT_LIST[@]}"; do
     --dates-var "$DATES_VAR" \
     --workers "$WORKERS" \
     --threshold-workers "$THRESHOLD_WORKERS" \
+    --slice-workers "$SLICE_WORKERS" \
     --block-rows "$BLOCK_ROWS" \
     --keep-python-cache
 done
@@ -74,13 +79,16 @@ for PCT in "${PCT_LIST[@]}"; do
   "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
     --pct "$PCT" \
     --area-mat "$AREA_MAT" \
-    --workers "$DETECT_WORKERS"
+    --workers "$DETECT_WORKERS" \
+    --write-workers "$DETECT_WRITE_WORKERS"
 done
 
 echo "Stage 3/3: append HSCI exposure metrics to hospital admittance"
 "$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
   --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
-  --hi-pcts "$PCTS"
+  --hi-pcts "$PCTS" \
+  --workers "$APPEND_WORKERS" \
+  --chunk-size "$APPEND_CHUNK_SIZE"
 
 rm -rf "$DATA_DIR/_HI_tmp" "$DATA_DIR/PRISM_cache"
 
