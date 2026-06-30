@@ -98,6 +98,11 @@ def build_one_day(d: datetime, args: argparse.Namespace, cache_root: Path, tmp_r
     out_mat_day = tmp_root / f"HI_{ds}.mat"
     if daily_h5_reusable(out_mat_day, args.t2m_var):
         return
+    if out_mat_day.is_file():
+        try:
+            out_mat_day.unlink()
+        except OSError:
+            pass
 
     u_t2 = f"{args.base_url}/{args.t2m_var}/daily/{d.year}/prism_{args.t2m_var}_us_30s_{ds}.zip"
     u_td = f"{args.base_url}/tdmean/daily/{d.year}/prism_tdmean_us_30s_{ds}.zip"
@@ -154,7 +159,11 @@ def threshold_for_month(
             if not mpath.is_file():
                 print(f"    [warn] missing mat {d:%Y%m%d}")
                 continue
-            cube[:, :, k] = load_daily_array(mpath, var_name, slice(r0, r1))
+            try:
+                cube[:, :, k] = load_daily_array(mpath, var_name, slice(r0, r1))
+            except Exception as exc:
+                print(f"    [warn] unreadable mat {d:%Y%m%d}: {exc}")
+                continue
         out[r0:r1, :] = matlab_prctile_nan_last_axis(cube, pct).astype(np.float32)
         print(f"    rows {r0 + 1}-{r1}/{nlat} done")
     return out
@@ -279,8 +288,18 @@ def main() -> None:
                 ds = d.strftime("%Y%m%d")
                 mpath = tmp_root / f"HI_{ds}.mat"
                 if mpath.is_file():
-                    hi = load_daily_array(mpath, "HI")
-                    t2 = load_daily_array(mpath, "T2")
+                    try:
+                        hi = load_daily_array(mpath, "HI")
+                        t2 = load_daily_array(mpath, "T2")
+                    except Exception as exc:
+                        print(f"Unreadable mat {ds}; writing date + NaN slice. {exc}")
+                        hi = None
+                        t2 = None
+                else:
+                    hi = None
+                    t2 = None
+
+                if hi is not None and t2 is not None:
                     if ds_hi is not None:
                         mag = (hi - thr_hi[d.month]).astype(np.float32)
                         mag[(mag <= 0) | np.isnan(hi)] = np.nan
