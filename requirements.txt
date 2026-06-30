@@ -1,0 +1,8 @@
+numpy
+pandas
+scipy
+netCDF4
+h5py
+rasterio
+requests
+scikit-image
