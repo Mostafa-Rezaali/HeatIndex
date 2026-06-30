@@ -74,12 +74,6 @@ def resolve_mat_variable_name(keys: list[str], requested: str, path: Path) -> st
     )
 
 
-def save_mat_variable(path: str | Path, name: str, value) -> None:
-    from scipy.io import savemat
-
-    savemat(path, {name: value}, do_compression=False)
-
-
 def load_dates_from_mat(path: str | Path, var_name: str = "dates") -> list[datetime]:
     try:
         raw = np.ravel(load_mat_variable(path, var_name))
@@ -271,48 +265,30 @@ def matlab_prctile_nan_last_axis(values: np.ndarray, pct: float) -> np.ndarray:
     return out.reshape(arr.shape[:-1])
 
 
-def save_daily_h5(path: str | Path, hi: np.ndarray, t2: np.ndarray, tvar: str) -> None:
-    from scipy.io import savemat
-
+def save_daily_cache(path: str | Path, hi: np.ndarray, t2: np.ndarray, tvar: str) -> None:
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    savemat(
-        tmp,
-        {
-            "HI": np.asarray(hi, dtype=np.float32),
-            "T2": np.asarray(t2, dtype=np.float32),
-            "tvar": np.array(str(tvar)),
-        },
-        do_compression=False,
-    )
+    with tmp.open("wb") as f:
+        np.savez(f, HI=np.asarray(hi, dtype=np.float32), T2=np.asarray(t2, dtype=np.float32), tvar=np.array(str(tvar)))
     tmp.replace(path)
 
 
-def daily_h5_reusable(path: str | Path, tvar: str) -> bool:
-    from scipy.io import loadmat
-
+def daily_cache_reusable(path: str | Path, tvar: str) -> bool:
     path = Path(path)
     if not path.is_file():
         return False
     try:
-        data = loadmat(path, variable_names=["HI", "T2", "tvar"], squeeze_me=True)
-    except (NotImplementedError, OSError, ValueError):
+        with np.load(path, allow_pickle=False) as data:
+            if "HI" not in data.files or "T2" not in data.files or "tvar" not in data.files:
+                return False
+            return str(np.asarray(data["tvar"]).item()) == str(tvar)
+    except (OSError, ValueError, KeyError):
         return False
-    if "HI" not in data or "T2" not in data or "tvar" not in data:
-        return False
-    return str(np.asarray(data["tvar"]).item()) == str(tvar)
 
 
 def load_daily_array(path: str | Path, var_name: str, row_slice: slice | None = None) -> np.ndarray:
-    from scipy.io import loadmat
-
-    try:
-        arr = loadmat(path, variable_names=[var_name], squeeze_me=True)[var_name]
-    except NotImplementedError as exc:
-        raise RuntimeError(
-            f"{path} appears to be a MATLAB v7.3/HDF5 file, but h5py is not installed. "
-            "Delete this cache file so it can be rebuilt as a standard MAT file, or install h5py."
-        ) from exc
+    with np.load(path, allow_pickle=False) as data:
+        arr = data[var_name]
     if row_slice is not None:
         arr = arr[row_slice, :]
     return np.asarray(arr, dtype=np.float32)

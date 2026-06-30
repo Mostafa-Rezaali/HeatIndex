@@ -14,15 +14,14 @@ import requests
 
 from heatindex.utils import (
     compute_heat_index_c,
-    daily_h5_reusable,
+    daily_cache_reusable,
     load_daily_array,
     load_dates_from_mat,
     matlab_prctile_nan_last_axis,
     month,
     retry,
     saturation_vapor_pressure_hpa,
-    save_daily_h5,
-    save_mat_variable,
+    save_daily_cache,
     year,
     yyyymmdd,
 )
@@ -40,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tmp-root", default="_HI_tmp")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--block-rows", type=int, default=64)
+    p.add_argument("--keep-python-cache", action="store_true")
     return p.parse_args()
 
 
@@ -95,12 +95,13 @@ def cleanup_day(*paths: Path) -> None:
 
 def build_one_day(d: datetime, args: argparse.Namespace, cache_root: Path, tmp_root: Path) -> None:
     ds = d.strftime("%Y%m%d")
-    out_mat_day = tmp_root / f"HI_{ds}.mat"
-    if daily_h5_reusable(out_mat_day, args.t2m_var):
+    out_cache_day = tmp_root / f"HI_{ds}.npz"
+    if daily_cache_reusable(out_cache_day, args.t2m_var):
         return
-    if out_mat_day.is_file():
+    for stale in (out_cache_day, tmp_root / f"HI_{ds}.mat"):
         try:
-            out_mat_day.unlink()
+            if stale.is_file():
+                stale.unlink()
         except OSError:
             pass
 
@@ -121,7 +122,7 @@ def build_one_day(d: datetime, args: argparse.Namespace, cache_root: Path, tmp_r
         td = read_prism_raster(pick_raster(d_td))
         rh = 100.0 * (saturation_vapor_pressure_hpa(td) / saturation_vapor_pressure_hpa(t2_raw))
         hi = compute_heat_index_c(t2_raw, rh).astype(np.float32)
-        save_daily_h5(out_mat_day, hi, t2_raw.astype(np.float32), args.t2m_var)
+        save_daily_cache(out_cache_day, hi, t2_raw.astype(np.float32), args.t2m_var)
     except Exception as exc:
         print(f"Failed {ds}: {exc}")
     finally:
@@ -155,7 +156,7 @@ def threshold_for_month(
         r1 = min(nlat, r0 + block_rows)
         cube = np.full((r1 - r0, nlon, len(idx_dates)), np.nan, dtype=np.float32)
         for k, d in enumerate(idx_dates):
-            mpath = tmp_root / f"HI_{d:%Y%m%d}.mat"
+            mpath = tmp_root / f"HI_{d:%Y%m%d}.npz"
             if not mpath.is_file():
                 print(f"    [warn] missing mat {d:%Y%m%d}")
                 continue
@@ -254,16 +255,16 @@ def main() -> None:
 
     print(f"Stage 2: monthly thresholds at P{args.pct:g} (HI and T) ...")
     for mm in range(5, 10):
-        f_hi = Path(f"HI_THR_{pct_tag}_{mm}.mat")
-        f_t = Path(f"T_THR_{pct_tag}_{mm}.mat")
+        f_hi = tmp_root / f"HI_THR_{pct_tag}_{mm}.npy"
+        f_t = tmp_root / f"T_THR_{pct_tag}_{mm}.npy"
         if not f_hi.is_file():
             print(f"  Month {mm:02d}: building HI threshold")
             thr = threshold_for_month(dates_all, tmp_root, mm, "HI", nlat, nlon, args.pct, args.block_rows)
-            save_mat_variable(f_hi, "tmp", thr)
+            np.save(f_hi, thr.astype(np.float32))
         if not f_t.is_file():
             print(f"  Month {mm:02d}: building T threshold")
             thr = threshold_for_month(dates_all, tmp_root, mm, "T2", nlat, nlon, args.pct, args.block_rows)
-            save_mat_variable(f_t, "tmp", thr)
+            np.save(f_t, thr.astype(np.float32))
 
     if build_hi_mag or build_t_mag:
         print("Stage 3: writing daily exceedance slices ...")
@@ -271,13 +272,9 @@ def main() -> None:
         thr_t = {}
         for mm in range(5, 10):
             if build_hi_mag:
-                from heatindex.utils import load_mat_variable
-
-                thr_hi[mm] = np.asarray(load_mat_variable(f"HI_THR_{pct_tag}_{mm}.mat"), dtype=np.float32)
+                thr_hi[mm] = np.asarray(np.load(tmp_root / f"HI_THR_{pct_tag}_{mm}.npy"), dtype=np.float32)
             if build_t_mag:
-                from heatindex.utils import load_mat_variable
-
-                thr_t[mm] = np.asarray(load_mat_variable(f"T_THR_{pct_tag}_{mm}.mat"), dtype=np.float32)
+                thr_t[mm] = np.asarray(np.load(tmp_root / f"T_THR_{pct_tag}_{mm}.npy"), dtype=np.float32)
 
         ds_hi = create_mag_nc(out_mag_hi, "HI_EXCDMAG", nlat, nlon, len(dates_mjjas), lat, lon, args.pct, y1, y2, f"Heat Index (from {args.t2m_var})") if build_hi_mag else None
         ds_t = create_mag_nc(out_mag_t, "T_EXCDMAG", nlat, nlon, len(dates_mjjas), lat, lon, args.pct, y1, y2, f"Temperature ({args.t2m_var})") if build_t_mag else None
@@ -286,7 +283,7 @@ def main() -> None:
         try:
             for ti, d in enumerate(dates_mjjas):
                 ds = d.strftime("%Y%m%d")
-                mpath = tmp_root / f"HI_{ds}.mat"
+                mpath = tmp_root / f"HI_{ds}.npz"
                 if mpath.is_file():
                     try:
                         hi = load_daily_array(mpath, "HI")
@@ -333,6 +330,8 @@ def main() -> None:
         print(f"HI MAG : {out_mag_hi}")
     if build_t_mag:
         print(f"T  MAG : {out_mag_t}")
+    if not args.keep_python_cache:
+        cleanup_day(tmp_root, cache_root)
 
 
 if __name__ == "__main__":

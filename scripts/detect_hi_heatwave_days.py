@@ -22,7 +22,6 @@ from heatindex.utils import (
     masked_to_nan,
     matlab_round_positive,
     retry,
-    save_mat_variable,
     yyyymmdd_to_datetime,
 )
 
@@ -52,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cluster-cutoff-km", type=float, default=1000.0)
     p.add_argument("--min-duration", type=int, default=3)
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--keep-checkpoints", action="store_true")
     return p.parse_args()
 
 
@@ -374,12 +374,6 @@ def main() -> None:
         with det_ckpt.open("rb") as f:
             det = pickle.load(f)
     else:
-        for mm in range(5, 10):
-            thr_path = Path(f"HI_THR_{pct}_{mm}.mat")
-            if thr_path.exists():
-                arr = np.asarray(load_mat_variable(thr_path))
-                print(f"Loaded HI_THR for month {mm:02d} from {thr_path} (size {arr.shape[0]}x{arr.shape[1]})")
-
         region_area = float(np.sum(load_mat_variable(args.area_mat, args.area_var)))
         is_hw = np.zeros(n_t, dtype=bool)
         ahsci_all = np.full(n_t, np.nan, dtype=np.float32)
@@ -466,7 +460,6 @@ def main() -> None:
             pickle.dump(det, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Saved detection checkpoint {det_ckpt}")
 
-        save_mat_variable(f"HW_indices_dates_{pct}.mat", "AHSCI", det["AHSCI"])
         clusters_df.to_csv(f"HW_events_clusters_{pct}.csv", index=False)
         events_df.to_csv(f"HW_events_summary_{pct}.csv", index=False)
 
@@ -523,6 +516,13 @@ def main() -> None:
                     pickle.dump({"last_written": k, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
                 print(f"Wrote {k + 1:5d}/{n_hw:5d} {det['hw_dates'][k]:%Y-%m-%d}")
     print("Done writing EXCD stack.")
+    if not args.keep_checkpoints:
+        for path in (det_ckpt, write_ckpt):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

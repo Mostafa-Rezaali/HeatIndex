@@ -41,9 +41,10 @@ To inspect the variables in a MAT file:
 python scripts/inspect_mat_variables.py /blue/nessie/mostafarezaali/400M_PRISM/Dir_MJJAS_HI.mat
 ```
 
-This stage keeps the reusable per-day HI/T2 files in `_HI_tmp`, matching the
-MATLAB workflow, and deletes each day's downloaded PRISM zip files and extracted
-rasters after that day is processed.
+This stage uses temporary Python cache files under `_HI_tmp` while running,
+deletes each day's downloaded PRISM zip files and extracted rasters after that
+day is processed, and removes the Python cache after successful NetCDF output
+creation unless `--keep-python-cache` is set.
 
 Detect HI heat-wave days and HSCI:
 

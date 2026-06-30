@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
-import pickle
 import re
 
 import netCDF4
@@ -20,10 +19,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mag-nc-hi", default="HI_EXCDMAG_daily_1981_2025_90.nc")
     p.add_argument("--patient-csv", default="Hospital_Admittancecsv.csv")
     p.add_argument("--zip-csv", default="USZipsWithLatLon_20231227.csv")
-    p.add_argument("--mask-cache", default="zip_grid_masks.pkl")
+    p.add_argument("--mask-cache", default="")
     p.add_argument("--zip-buffer-cells", type=int, default=1)
     p.add_argument("--out-csv", default="Hospital_Admittance_with_HSCI.csv")
-    p.add_argument("--out-pickle", default="Hospital_Admittance_with_HSCI.pkl")
+    p.add_argument("--out-pickle", default="")
     return p.parse_args()
 
 
@@ -78,8 +77,10 @@ def normalize_zip_series(series: pd.Series) -> pd.Series:
 
 
 def build_zip_masks(args, needed_zips, lat_grid, lon_grid):
+    import pickle
+
     cache = Path(args.mask_cache)
-    if cache.exists():
+    if args.mask_cache and cache.exists():
         with cache.open("rb") as f:
             payload = pickle.load(f)
         cached_zips = set(payload.get("cached_zips", []))
@@ -128,9 +129,10 @@ def build_zip_masks(args, needed_zips, lat_grid, lon_grid):
             f"grid cell ({r_near + 1},{c_near + 1}), using {r_count}x{c_count} neighborhood ({int(mask.sum())} cells)"
         )
 
-    with cache.open("wb") as f:
-        pickle.dump({"zcta_masks": masks, "cached_zips": list(needed_zips), "cached_zip_buffer_cells": args.zip_buffer_cells}, f)
-    print(f"Saved ZIP masks to {cache}")
+    if args.mask_cache:
+        with cache.open("wb") as f:
+            pickle.dump({"zcta_masks": masks, "cached_zips": list(needed_zips), "cached_zip_buffer_cells": args.zip_buffer_cells}, f)
+        print(f"Saved ZIP masks to {cache}")
     return masks
 
 
@@ -418,8 +420,11 @@ def main() -> None:
     p["excd_HI_7d_prior_cat"] = make_exposure_category(p["zcta_EXCD_HI_7d_prior"])
 
     p.to_csv(args.out_csv, index=False)
-    with Path(args.out_pickle).open("wb") as f:
-        pickle.dump(p, f, protocol=pickle.HIGHEST_PROTOCOL)
+    if args.out_pickle:
+        import pickle
+
+        with Path(args.out_pickle).open("wb") as f:
+            pickle.dump(p, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"\nDone. Saved {args.out_csv}")
 
 
