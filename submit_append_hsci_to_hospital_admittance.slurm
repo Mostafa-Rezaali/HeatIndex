@@ -3,7 +3,7 @@
 #SBATCH --output=hi_hospital_%j.log
 #SBATCH --error=hi_hospital_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=64
 #SBATCH --mem=500G
 #SBATCH --time=2-00:00:00
 #SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM

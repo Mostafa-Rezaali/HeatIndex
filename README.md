@@ -96,5 +96,5 @@ Defaults can be overridden at submission time, for example:
 
 ```bash
 cd "$DATA_DIR"
-PCT=90 T2M_VAR=tmax WORKERS=16 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
+PCT=90 T2M_VAR=tmax WORKERS=64 DETECT_WORKERS=64 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
 ```

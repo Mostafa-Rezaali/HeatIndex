@@ -3,7 +3,7 @@
 #SBATCH --output=hi_detect_hw_%j.log
 #SBATCH --error=hi_detect_hw_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=64
 #SBATCH --mem=500G
 #SBATCH --time=7-00:00:00
 #SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM
@@ -16,7 +16,7 @@ CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
-DETECT_WORKERS=${DETECT_WORKERS:-1}
+DETECT_WORKERS=${DETECT_WORKERS:-64}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 

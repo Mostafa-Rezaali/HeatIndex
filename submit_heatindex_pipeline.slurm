@@ -3,7 +3,7 @@
 #SBATCH --output=hi_pipeline_%j.log
 #SBATCH --error=hi_pipeline_%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=64
 #SBATCH --mem=500G
 #SBATCH --time=14-00:00:00
 #SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM
@@ -18,12 +18,12 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 
 PCT=${PCT:-90}
 T2M_VAR=${T2M_VAR:-tmax}
-WORKERS=${WORKERS:-16}
+WORKERS=${WORKERS:-64}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
 DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
 DATES_VAR=${DATES_VAR:-dates}
 
-DETECT_WORKERS=${DETECT_WORKERS:-1}
+DETECT_WORKERS=${DETECT_WORKERS:-64}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
