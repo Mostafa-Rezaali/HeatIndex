@@ -52,30 +52,35 @@ customized with `--help`.
 
 ## HiPerGator Slurm
 
-On HiPerGator, run from the main PRISM working directory. All inputs,
-intermediate files, and outputs are read from or written to this directory by
-default:
+On HiPerGator, keep the Git checkout separate from the main PRISM data
+directory. All inputs, intermediate files, logs, and outputs are read from or
+written to the data directory by default:
 
 ```bash
-cd /blue/nessie/mostafarezaali/400M_PRISM
+DATA_DIR=/blue/nessie/mostafarezaali/400M_PRISM
+CODE_DIR=/blue/nessie/mostafarezaali/HeatIndex_code
 ```
 
-The repository includes HiPerGator submission scripts with `--mem=500G`:
+Create or refresh the code checkout:
 
 ```bash
-sbatch submit_build_prism_exceedance_mag.slurm
-sbatch submit_detect_hi_heatwave_days.slurm
-sbatch submit_append_hsci_to_hospital_admittance.slurm
+cd /blue/nessie/mostafarezaali
+git clone https://github.com/Mostafa-Rezaali/HeatIndex.git HeatIndex_code
+cd "$CODE_DIR"
+git pull --ff-only origin master
 ```
 
-To submit the full pipeline with dependencies:
+The repository includes HiPerGator submission scripts with `--mem=500G`. To
+submit the full pipeline with dependencies:
 
 ```bash
+cd "$CODE_DIR"
 bash submit_heatindex_pipeline.sh
 ```
 
 Defaults can be overridden at submission time, for example:
 
 ```bash
-PCT=90 T2M_VAR=tmax WORKERS=16 sbatch submit_build_prism_exceedance_mag.slurm
+cd "$DATA_DIR"
+PCT=90 T2M_VAR=tmax WORKERS=16 sbatch "$CODE_DIR/submit_build_prism_exceedance_mag.slurm"
 ```

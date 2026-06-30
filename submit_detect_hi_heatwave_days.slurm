@@ -6,12 +6,14 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=500G
 #SBATCH --time=7-00:00:00
+#SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mostafarezaali@ufl.edu
 
 set -euo pipefail
 
-WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
+CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/HeatIndex_code}
+DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-1}
@@ -23,13 +25,15 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-cd "$WORK_DIR"
 module load git || true
+cd "$CODE_DIR"
 git pull --ff-only origin master
 
-"$PY" -m py_compile heatindex/utils.py scripts/detect_hi_heatwave_days.py
+export PYTHONPATH="$CODE_DIR"
+"$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/detect_hi_heatwave_days.py"
 
-"$PY" -u scripts/detect_hi_heatwave_days.py \
+cd "$DATA_DIR"
+"$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
   --pct "$PCT" \
   --area-mat "$AREA_MAT" \
   --workers "$DETECT_WORKERS"

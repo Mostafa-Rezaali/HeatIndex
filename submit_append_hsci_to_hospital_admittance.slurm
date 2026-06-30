@@ -6,12 +6,14 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=500G
 #SBATCH --time=2-00:00:00
+#SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mostafarezaali@ufl.edu
 
 set -euo pipefail
 
-WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
+CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/HeatIndex_code}
+DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
 
@@ -21,13 +23,15 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-cd "$WORK_DIR"
 module load git || true
+cd "$CODE_DIR"
 git pull --ff-only origin master
 
-"$PY" -m py_compile heatindex/utils.py scripts/append_hsci_to_hospital_admittance.py
+export PYTHONPATH="$CODE_DIR"
+"$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py"
 
-"$PY" -u scripts/append_hsci_to_hospital_admittance.py \
+cd "$DATA_DIR"
+"$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
   --zip-buffer-cells "$ZIP_BUFFER_CELLS"
 
 echo "HEATINDEX HOSPITAL ADMITTANCE HSCI APPEND COMPLETE"
