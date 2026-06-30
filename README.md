@@ -45,3 +45,25 @@ python scripts/append_hsci_to_hospital_admittance.py
 
 All scripts default to the same filenames used in the MATLAB code and can be
 customized with `--help`.
+
+## HiPerGator Slurm
+
+The repository includes HiPerGator submission scripts with `--mem=500G`:
+
+```bash
+sbatch submit_build_prism_exceedance_mag.slurm
+sbatch submit_detect_hi_heatwave_days.slurm
+sbatch submit_append_hsci_to_hospital_admittance.slurm
+```
+
+To submit the full pipeline with dependencies:
+
+```bash
+bash submit_heatindex_pipeline.sh
+```
+
+Defaults can be overridden at submission time, for example:
+
+```bash
+PCT=90 T2M_VAR=tmax WORKERS=16 sbatch submit_build_prism_exceedance_mag.slurm
+```
