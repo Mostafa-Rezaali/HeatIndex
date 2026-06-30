@@ -13,13 +13,5 @@ fi
 
 cd "$DATA_DIR"
 
-jid1=$(sbatch --parsable "$CODE_DIR/submit_build_prism_exceedance_mag.slurm")
-echo "Submitted PRISM/HI magnitude build: $jid1"
-
-jid2=$(sbatch --parsable --dependency=afterok:"$jid1" "$CODE_DIR/submit_detect_hi_heatwave_days.slurm")
-echo "Submitted HI heatwave-day detection after $jid1: $jid2"
-
-jid3=$(sbatch --parsable --dependency=afterok:"$jid2" "$CODE_DIR/submit_append_hsci_to_hospital_admittance.slurm")
-echo "Submitted hospital-admittance extraction after $jid2: $jid3"
-
-echo "HeatIndex pipeline submitted: $jid1 -> $jid2 -> $jid3"
+jid=$(sbatch --parsable "$CODE_DIR/submit_heatindex_pipeline.slurm")
+echo "Submitted HeatIndex full pipeline as one Slurm job: $jid"

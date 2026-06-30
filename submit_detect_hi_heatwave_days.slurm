@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/HeatIndex_code}
+CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}

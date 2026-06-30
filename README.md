@@ -68,13 +68,13 @@ written to the data directory by default:
 
 ```bash
 DATA_DIR=/blue/nessie/mostafarezaali/400M_PRISM
-CODE_DIR=/blue/nessie/mostafarezaali/HeatIndex_code
+CODE_DIR=/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code
 ```
 
 Create or refresh the code checkout:
 
 ```bash
-cd /blue/nessie/mostafarezaali
+cd "$DATA_DIR"
 git clone https://github.com/Mostafa-Rezaali/HeatIndex.git HeatIndex_code
 cd "$CODE_DIR"
 git pull --ff-only origin master
@@ -84,8 +84,8 @@ GitHub HTTPS requires a personal access token or cached credentials. The Slurm
 scripts do not run `git pull` by default, so batch jobs use the code already in
 `CODE_DIR`. Set `AUTO_GIT_PULL=1` only after Git credentials are configured.
 
-The repository includes HiPerGator submission scripts with `--mem=500G`. To
-submit the full pipeline with dependencies:
+The repository includes a HiPerGator full-pipeline submission script with
+`--mem=500G`. It runs all stages sequentially in one Slurm job allocation:
 
 ```bash
 cd "$CODE_DIR"
@@ -96,5 +96,5 @@ Defaults can be overridden at submission time, for example:
 
 ```bash
 cd "$DATA_DIR"
-PCT=90 T2M_VAR=tmax WORKERS=16 sbatch "$CODE_DIR/submit_build_prism_exceedance_mag.slurm"
+PCT=90 T2M_VAR=tmax WORKERS=16 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
 ```

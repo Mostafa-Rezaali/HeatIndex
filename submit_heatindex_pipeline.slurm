@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=hi_build_mag
-#SBATCH --output=hi_build_mag_%j.log
-#SBATCH --error=hi_build_mag_%j.err
+#SBATCH --job-name=hi_pipeline
+#SBATCH --output=hi_pipeline_%j.log
+#SBATCH --error=hi_pipeline_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=500G
-#SBATCH --time=7-00:00:00
+#SBATCH --time=14-00:00:00
 #SBATCH --chdir=/blue/nessie/mostafarezaali/400M_PRISM
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mostafarezaali@ufl.edu
@@ -15,13 +15,19 @@ set -euo pipefail
 CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
+
 PCT=${PCT:-90}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-16}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
-AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
 DATES_VAR=${DATES_VAR:-dates}
+
+DETECT_WORKERS=${DETECT_WORKERS:-1}
+AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
+
+ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
+AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
 export PYTHONUNBUFFERED=1
@@ -36,9 +42,15 @@ if [ "$AUTO_GIT_PULL" = "1" ]; then
 fi
 
 export PYTHONPATH="$CODE_DIR"
-"$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/build_prism_exceedance_mag.py"
+"$PY" -m py_compile \
+  "$CODE_DIR/heatindex/utils.py" \
+  "$CODE_DIR/scripts/build_prism_exceedance_mag.py" \
+  "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+  "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py"
 
 cd "$DATA_DIR"
+
+echo "Stage 1/3: build PRISM HI/T exceedance magnitude"
 "$PY" -u "$CODE_DIR/scripts/build_prism_exceedance_mag.py" \
   --pct "$PCT" \
   --t2m-var "$T2M_VAR" \
@@ -47,4 +59,14 @@ cd "$DATA_DIR"
   --workers "$WORKERS" \
   --block-rows "$BLOCK_ROWS"
 
-echo "HEATINDEX PRISM EXCEEDANCE MAG BUILD COMPLETE"
+echo "Stage 2/3: detect HI heatwave days"
+"$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+  --pct "$PCT" \
+  --area-mat "$AREA_MAT" \
+  --workers "$DETECT_WORKERS"
+
+echo "Stage 3/3: append HSCI exposure metrics to hospital admittance"
+"$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
+  --zip-buffer-cells "$ZIP_BUFFER_CELLS"
+
+echo "HEATINDEX FULL PIPELINE COMPLETE"
