@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pct", type=float, default=90)
     p.add_argument("--t2m-var", choices=["tmean", "tmax"], default="tmax")
     p.add_argument("--dates-mat", default="Dir_MJJAS_HI.mat")
+    p.add_argument("--dates-var", default="dates")
     p.add_argument("--sample-raster", default="prism_tdmean_us_30s_19810101.tif")
     p.add_argument("--base-url", default="https://data.prism.oregonstate.edu/time_series/us/an/800m")
     p.add_argument("--cache-root", default="PRISM_cache")
@@ -210,7 +211,7 @@ def create_mag_nc(
 def main() -> None:
     args = parse_args()
     print("=== PRISM Daily Exceedance MAG: HI + T2m (climatological monthly thresholds) ===")
-    dates_all = load_dates_from_mat(args.dates_mat)
+    dates_all = load_dates_from_mat(args.dates_mat, args.dates_var)
     years = sorted({d.year for d in dates_all})
     months_sel = set(range(5, 10))
     dates_mjjas = [d for d in dates_all if d.month in months_sel]

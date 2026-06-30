@@ -25,9 +25,10 @@ def load_mat_variable(path: str | Path, name: str | None = None):
     path = Path(path)
     try:
         data = loadmat(path, squeeze_me=True, struct_as_record=False)
-        if name is not None:
-            return data[name]
         keys = [k for k in data if not k.startswith("__")]
+        if name is not None:
+            resolved = resolve_mat_variable_name(keys, name, path)
+            return data[resolved]
         if not keys:
             raise KeyError(f"No MATLAB variables found in {path}")
         return data[keys[0]]
@@ -35,13 +36,41 @@ def load_mat_variable(path: str | Path, name: str | None = None):
         import h5py
 
         with h5py.File(path, "r") as h5:
+            keys = [k for k in h5.keys() if not k.startswith("#")]
             if name is None:
-                keys = [k for k in h5.keys() if not k.startswith("#")]
                 if not keys:
                     raise KeyError(f"No HDF5 MATLAB variables found in {path}")
                 name = keys[0]
-            arr = np.array(h5[name])
+            resolved = resolve_mat_variable_name(keys, name, path)
+            arr = np.array(h5[resolved])
         return np.squeeze(arr)
+
+
+def mat_variable_names(path: str | Path) -> list[str]:
+    from scipy.io import loadmat
+
+    path = Path(path)
+    try:
+        data = loadmat(path, squeeze_me=True, struct_as_record=False)
+        return [k for k in data if not k.startswith("__")]
+    except NotImplementedError:
+        import h5py
+
+        with h5py.File(path, "r") as h5:
+            return [k for k in h5.keys() if not k.startswith("#")]
+
+
+def resolve_mat_variable_name(keys: list[str], requested: str, path: Path) -> str:
+    if requested in keys:
+        return requested
+    requested_lc = requested.lower()
+    matches = [k for k in keys if k.lower() == requested_lc]
+    if len(matches) == 1:
+        return matches[0]
+    available = ", ".join(keys) if keys else "<none>"
+    raise KeyError(
+        f"Variable '{requested}' was not found in {path}. Available variables: {available}"
+    )
 
 
 def save_mat_variable(path: str | Path, name: str, value) -> None:

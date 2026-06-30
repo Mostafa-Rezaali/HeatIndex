@@ -20,6 +20,8 @@ T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-16}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
+DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
+DATES_VAR=${DATES_VAR:-dates}
 
 unset PYTHONHOME PYTHONPATH
 export PYTHONUNBUFFERED=1
@@ -40,6 +42,8 @@ cd "$DATA_DIR"
 "$PY" -u "$CODE_DIR/scripts/build_prism_exceedance_mag.py" \
   --pct "$PCT" \
   --t2m-var "$T2M_VAR" \
+  --dates-mat "$DATES_MAT" \
+  --dates-var "$DATES_VAR" \
   --workers "$WORKERS" \
   --block-rows "$BLOCK_ROWS"
 

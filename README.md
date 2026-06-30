@@ -31,6 +31,16 @@ Build daily HI/T exceedance magnitude products:
 python scripts/build_prism_exceedance_mag.py --pct 90 --t2m-var tmax
 ```
 
+The MATLAB source expects `Dir_MJJAS_HI.mat` to contain a variable named
+`dates`. If the file uses a different variable name, pass `--dates-var NAME`
+or set `DATES_VAR=NAME` in the Slurm submission.
+
+To inspect the variables in a MAT file:
+
+```bash
+python scripts/inspect_mat_variables.py /blue/nessie/mostafarezaali/400M_PRISM/Dir_MJJAS_HI.mat
+```
+
 This stage keeps the reusable per-day HI/T2 files in `_HI_tmp`, matching the
 MATLAB workflow, and deletes each day's downloaded PRISM zip files and extracted
 rasters after that day is processed.
