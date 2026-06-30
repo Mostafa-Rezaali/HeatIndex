@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/HeatIndex}
+WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
 

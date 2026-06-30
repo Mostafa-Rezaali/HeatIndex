@@ -48,6 +48,14 @@ customized with `--help`.
 
 ## HiPerGator Slurm
 
+On HiPerGator, run from the main PRISM working directory. All inputs,
+intermediate files, and outputs are read from or written to this directory by
+default:
+
+```bash
+cd /blue/nessie/mostafarezaali/400M_PRISM
+```
+
 The repository includes HiPerGator submission scripts with `--mem=500G`:
 
 ```bash

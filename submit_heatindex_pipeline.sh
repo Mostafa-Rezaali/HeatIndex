@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
+cd "$WORK_DIR"
+
 jid1=$(sbatch --parsable submit_build_prism_exceedance_mag.slurm)
 echo "Submitted PRISM/HI magnitude build: $jid1"
 

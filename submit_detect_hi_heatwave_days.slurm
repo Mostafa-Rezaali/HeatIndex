@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/HeatIndex}
+WORK_DIR=${WORK_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-1}
