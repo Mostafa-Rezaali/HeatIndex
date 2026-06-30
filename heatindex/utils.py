@@ -272,38 +272,50 @@ def matlab_prctile_nan_last_axis(values: np.ndarray, pct: float) -> np.ndarray:
 
 
 def save_daily_h5(path: str | Path, hi: np.ndarray, t2: np.ndarray, tvar: str) -> None:
-    import h5py
+    from scipy.io import savemat
 
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with h5py.File(tmp, "w") as h5:
-        h5.create_dataset("HI", data=np.asarray(hi, dtype=np.float32), compression="gzip", compression_opts=4)
-        h5.create_dataset("T2", data=np.asarray(t2, dtype=np.float32), compression="gzip", compression_opts=4)
-        h5.attrs["tvar"] = str(tvar)
+    savemat(
+        tmp,
+        {
+            "HI": np.asarray(hi, dtype=np.float32),
+            "T2": np.asarray(t2, dtype=np.float32),
+            "tvar": np.array(str(tvar)),
+        },
+        do_compression=False,
+    )
     tmp.replace(path)
 
 
 def daily_h5_reusable(path: str | Path, tvar: str) -> bool:
-    import h5py
+    from scipy.io import loadmat
 
     path = Path(path)
     if not path.is_file():
         return False
     try:
-        with h5py.File(path, "r") as h5:
-            return "HI" in h5 and "T2" in h5 and str(h5.attrs.get("tvar", "")) == str(tvar)
-    except OSError:
+        data = loadmat(path, variable_names=["HI", "T2", "tvar"], squeeze_me=True)
+    except (NotImplementedError, OSError, ValueError):
         return False
+    if "HI" not in data or "T2" not in data or "tvar" not in data:
+        return False
+    return str(np.asarray(data["tvar"]).item()) == str(tvar)
 
 
 def load_daily_array(path: str | Path, var_name: str, row_slice: slice | None = None) -> np.ndarray:
-    import h5py
+    from scipy.io import loadmat
 
-    with h5py.File(path, "r") as h5:
-        ds = h5[var_name]
-        if row_slice is None:
-            return np.asarray(ds, dtype=np.float32)
-        return np.asarray(ds[row_slice, :], dtype=np.float32)
+    try:
+        arr = loadmat(path, variable_names=[var_name], squeeze_me=True)[var_name]
+    except NotImplementedError as exc:
+        raise RuntimeError(
+            f"{path} appears to be a MATLAB v7.3/HDF5 file, but h5py is not installed. "
+            "Delete this cache file so it can be rebuilt as a standard MAT file, or install h5py."
+        ) from exc
+    if row_slice is not None:
+        arr = arr[row_slice, :]
+    return np.asarray(arr, dtype=np.float32)
 
 
 def retry(action: Callable[[], None], label: str, max_try: int = 5) -> None:
