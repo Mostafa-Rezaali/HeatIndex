@@ -58,6 +58,19 @@ Append exposure metrics to hospital-admission records:
 python scripts/append_hsci_to_hospital_admittance.py
 ```
 
+The hospital output includes percentile-specific HI additions for each value in
+`--hi-pcts` (default `90,95`):
+
+- `HSCI_HI_30d_prior_p90`, `HSCI_HI_30d_prior_p95`
+- `event_duration_HI_admit_anchor_p90`, `event_duration_HI_admit_anchor_p95`
+- `days_heatwave_HI_30d_prior_p90`, `days_heatwave_HI_30d_prior_p95`
+- `days_heatwave_HI_21d_prior_p90`, `days_heatwave_HI_21d_prior_p95`
+- `days_heatwave_HI_14d_prior_p90`, `days_heatwave_HI_14d_prior_p95`
+
+The anchored event duration counts ZIP-level HI exceedance days in the run
+ending on the admit day, scanning backward up to 30 days and allowing one
+non-exceedance grace day without counting the grace day as a heat day.
+
 All scripts default to the same filenames used in the MATLAB code and can be
 customized with `--help`.
 
@@ -97,5 +110,5 @@ Defaults can be overridden at submission time, for example:
 
 ```bash
 cd "$DATA_DIR"
-PCT=90 T2M_VAR=tmax WORKERS=64 DETECT_WORKERS=64 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
+PCTS=90,95 T2M_VAR=tmax WORKERS=64 DETECT_WORKERS=64 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
 ```

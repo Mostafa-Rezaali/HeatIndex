@@ -16,7 +16,7 @@ CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 
-PCT=${PCT:-90}
+PCTS=${PCTS:-90,95}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-64}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
@@ -51,22 +51,35 @@ export PYTHONPATH="$CODE_DIR"
 cd "$DATA_DIR"
 
 echo "Stage 1/3: build PRISM HI/T exceedance magnitude"
-"$PY" -u "$CODE_DIR/scripts/build_prism_exceedance_mag.py" \
-  --pct "$PCT" \
-  --t2m-var "$T2M_VAR" \
-  --dates-mat "$DATES_MAT" \
-  --dates-var "$DATES_VAR" \
-  --workers "$WORKERS" \
-  --block-rows "$BLOCK_ROWS"
+IFS=',' read -r -a PCT_LIST <<< "$PCTS"
+for PCT in "${PCT_LIST[@]}"; do
+  PCT="${PCT//[[:space:]]/}"
+  echo "  Building percentile P${PCT}"
+  "$PY" -u "$CODE_DIR/scripts/build_prism_exceedance_mag.py" \
+    --pct "$PCT" \
+    --t2m-var "$T2M_VAR" \
+    --dates-mat "$DATES_MAT" \
+    --dates-var "$DATES_VAR" \
+    --workers "$WORKERS" \
+    --block-rows "$BLOCK_ROWS" \
+    --keep-python-cache
+done
 
 echo "Stage 2/3: detect HI heatwave days"
-"$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
-  --pct "$PCT" \
-  --area-mat "$AREA_MAT" \
-  --workers "$DETECT_WORKERS"
+for PCT in "${PCT_LIST[@]}"; do
+  PCT="${PCT//[[:space:]]/}"
+  echo "  Detecting percentile P${PCT}"
+  "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+    --pct "$PCT" \
+    --area-mat "$AREA_MAT" \
+    --workers "$DETECT_WORKERS"
+done
 
 echo "Stage 3/3: append HSCI exposure metrics to hospital admittance"
 "$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
-  --zip-buffer-cells "$ZIP_BUFFER_CELLS"
+  --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
+  --hi-pcts "$PCTS"
+
+rm -rf "$DATA_DIR/_HI_tmp" "$DATA_DIR/PRISM_cache"
 
 echo "HEATINDEX FULL PIPELINE COMPLETE"

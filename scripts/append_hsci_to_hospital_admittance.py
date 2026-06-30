@@ -17,6 +17,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hw-nc-t", default="EXCD_MJJAS_HWdays.nc")
     p.add_argument("--hw-nc-hi", default="HI_EXCD_MJJAS_HWdays_90.nc")
     p.add_argument("--mag-nc-hi", default="HI_EXCDMAG_daily_1981_2025_90.nc")
+    p.add_argument("--hi-pcts", default="90,95")
+    p.add_argument("--hi-mag-template", default="HI_EXCDMAG_daily_1981_2025_{pct}.nc")
+    p.add_argument("--hi-hw-template", default="HI_EXCD_MJJAS_HWdays_{pct}.nc")
     p.add_argument("--patient-csv", default="Hospital_Admittancecsv.csv")
     p.add_argument("--zip-csv", default="USZipsWithLatLon_20231227.csv")
     p.add_argument("--mask-cache", default="")
@@ -24,6 +27,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-csv", default="Hospital_Admittance_with_HSCI.csv")
     p.add_argument("--out-pickle", default="")
     return p.parse_args()
+
+
+def parse_pcts(value: str) -> list[int]:
+    out = []
+    for token in value.split(","):
+        token = token.strip()
+        if token:
+            out.append(int(token))
+    if not out:
+        raise ValueError("--hi-pcts must include at least one percentile")
+    return out
+
+
+def pct_suffix(pct: int) -> str:
+    return f"p{pct}"
 
 
 def parse_date_safe(value) -> pd.Timestamp:
@@ -52,6 +70,30 @@ def read_time_and_hsci(path: str | Path):
         hsci = masked_to_nan(ds["HSCI"][:]) if "HSCI" in ds.variables else np.full(t.shape, np.nan)
     dates = pd.to_datetime([d.date() for d in yyyymmdd_to_datetime(t)])
     return t, dates, hsci
+
+
+def load_hi_context(pct: int, args):
+    mag_nc = Path(args.hi_mag_template.format(pct=pct))
+    hw_nc = Path(args.hi_hw_template.format(pct=pct))
+    if not mag_nc.is_file():
+        raise FileNotFoundError(f"Missing HI MAG file for P{pct}: {mag_nc}")
+    if not hw_nc.is_file():
+        raise FileNotFoundError(f"Missing HSCI-H file for P{pct}: {hw_nc}")
+
+    with netCDF4.Dataset(mag_nc) as ds:
+        t_daily = np.asarray(ds["time"][:], dtype=np.float64)
+    dates_daily = pd.to_datetime([d.date() for d in yyyymmdd_to_datetime(t_daily)])
+    _, hw_dates, hw_hsci = read_time_and_hsci(hw_nc)
+    return {
+        "pct": pct,
+        "suffix": pct_suffix(pct),
+        "mag_nc": str(mag_nc),
+        "hw_nc": str(hw_nc),
+        "dates_daily": dates_daily,
+        "idx_daily": make_date_index(dates_daily),
+        "hw_dates": hw_dates,
+        "hsci_by_date": {pd.Timestamp(d).normalize(): float(v) for d, v in zip(hw_dates, hw_hsci)},
+    }
 
 
 def read_lat_lon(path: str | Path):
@@ -162,6 +204,43 @@ def read_zip_avg(nc_file, var_name, date_index, zm: ZipGridMask, target_date, ze
     return 0.0 if np.isnan(val) else val
 
 
+def sum_hsci_prior(hsci_by_date, admit_date, days: int) -> float:
+    total = 0.0
+    for offset in range(-days, 0):
+        dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
+        v = hsci_by_date.get(dd)
+        if v is not None and np.isfinite(v):
+            total += v
+    return total
+
+
+def count_zip_heat_days(ctx, zm: ZipGridMask, admit_date, days: int) -> int:
+    count = 0
+    for offset in range(-days, 0):
+        dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
+        v = read_zip_avg(ctx["mag_nc"], "HI_EXCDMAG", ctx["idx_daily"], zm, dd, False)
+        if np.isfinite(v) and v > 0:
+            count += 1
+    return count
+
+
+def anchored_heat_duration_with_grace(ctx, zm: ZipGridMask, admit_date, max_back_days: int = 30, grace_days: int = 1) -> int:
+    heat_days = 0
+    grace_used = 0
+    for offset in range(0, -max_back_days - 1, -1):
+        dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
+        v = read_zip_avg(ctx["mag_nc"], "HI_EXCDMAG", ctx["idx_daily"], zm, dd, False)
+        is_heat = np.isfinite(v) and v > 0
+        if is_heat:
+            heat_days += 1
+            continue
+        if grace_used < grace_days:
+            grace_used += 1
+            continue
+        break
+    return heat_days
+
+
 def find_backward_nearest_heatwave_cell(nc_file, var_name, date_index, dates_vec, zm, target_date, lat_grid, lon_grid):
     if pd.isna(target_date):
         return np.nan, np.nan, np.nan
@@ -246,24 +325,25 @@ def main() -> None:
     needed_zips = sorted(p["zip5"].dropna().astype(str).str.strip().unique().tolist())
     print(f"Unique zip codes needed: {len(needed_zips)}")
 
-    lat_grid, lon_grid = read_lat_lon(args.mag_nc_hi)
-    with netCDF4.Dataset(args.mag_nc_hi) as ds:
-        t_daily_hi = np.asarray(ds["time"][:], dtype=np.float64)
-    dates_daily_hi = pd.to_datetime([d.date() for d in yyyymmdd_to_datetime(t_daily_hi)])
+    hi_pcts = parse_pcts(args.hi_pcts)
+    hi_contexts = {pct: load_hi_context(pct, args) for pct in hi_pcts}
+    legacy_pct = 90 if 90 in hi_contexts else hi_pcts[0]
+    legacy_hi = hi_contexts[legacy_pct]
 
     hw_time_t, hw_dates_t, hw_hsci_t = read_time_and_hsci(args.hw_nc_t)
-    hw_time_hi, hw_dates_hi, hw_hsci_hi = read_time_and_hsci(args.hw_nc_hi)
-    print(f"Daily HI file : {len(t_daily_hi)} MJJAS days")
+    lat_grid, lon_grid = read_lat_lon(legacy_hi["mag_nc"])
+    dates_daily_hi = legacy_hi["dates_daily"]
+    print(f"Daily HI file P{legacy_pct}: {len(dates_daily_hi)} MJJAS days")
     print(f"HW days T     : {len(hw_time_t)} days")
-    print(f"HW days HI    : {len(hw_time_hi)} days")
+    for pct, ctx in hi_contexts.items():
+        print(f"HW days HI P{pct}: {len(ctx['hw_dates'])} days")
 
     masks = build_zip_masks(args, needed_zips, lat_grid, lon_grid)
-    idx_daily_hi = make_date_index(dates_daily_hi)
+    idx_daily_hi = legacy_hi["idx_daily"]
     idx_hw_t = make_date_index(hw_dates_t)
-    idx_hw_hi = make_date_index(hw_dates_hi)
 
     hsci_t_by_date = {pd.Timestamp(d).normalize(): float(v) for d, v in zip(hw_dates_t, hw_hsci_t)}
-    hsci_hi_by_date = {pd.Timestamp(d).normalize(): float(v) for d, v in zip(hw_dates_hi, hw_hsci_hi)}
+    hsci_hi_by_date = legacy_hi["hsci_by_date"]
 
     cols = {
         "HSCI_T_admit": np.full(n_p, np.nan),
@@ -292,6 +372,13 @@ def main() -> None:
         "nearest_hw_space_km_HI_admit_nan": np.full(n_p, np.nan),
         "nearest_hw_excd_HI_admit_nan": np.full(n_p, np.nan),
     }
+    for pct, ctx in hi_contexts.items():
+        s = ctx["suffix"]
+        cols[f"HSCI_HI_30d_prior_{s}"] = np.full(n_p, np.nan)
+        cols[f"event_duration_HI_admit_anchor_{s}"] = np.full(n_p, np.nan)
+        cols[f"days_heatwave_HI_30d_prior_{s}"] = np.zeros(n_p)
+        cols[f"days_heatwave_HI_21d_prior_{s}"] = np.zeros(n_p)
+        cols[f"days_heatwave_HI_14d_prior_{s}"] = np.zeros(n_p)
 
     for i in range(n_p):
         zc = str(p.at[i, "zip5"]).strip()
@@ -304,17 +391,25 @@ def main() -> None:
         cols["HSCI_T_admit"][i] = hsci_t_by_date.get(d0, np.nan)
         cols["HSCI_HI_admit"][i] = hsci_hi_by_date.get(d0, np.nan)
         cols["zcta_EXCD_T_admit"][i] = read_zip_avg(args.hw_nc_t, "EXCD", idx_hw_t, zm, d0, True)
-        cols["zcta_EXCD_HI_admit"][i] = read_zip_avg(args.mag_nc_hi, "HI_EXCDMAG", idx_daily_hi, zm, d0, False)
+        cols["zcta_EXCD_HI_admit"][i] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, d0, False)
         cols["miss_excd_T_admit"][i] = float(np.isnan(cols["zcta_EXCD_T_admit"][i]))
         cols["miss_excd_HI_admit"][i] = float(np.isnan(cols["zcta_EXCD_HI_admit"][i]))
 
         if cols["miss_excd_HI_admit"][i]:
             back_days, space_km, excd_val = find_backward_nearest_heatwave_cell(
-                args.mag_nc_hi, "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm, d0, lat_grid, lon_grid
+                legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm, d0, lat_grid, lon_grid
             )
             cols["nearest_hw_back_days_HI_admit_nan"][i] = back_days
             cols["nearest_hw_space_km_HI_admit_nan"][i] = space_km
             cols["nearest_hw_excd_HI_admit_nan"][i] = excd_val
+
+        for pct, ctx in hi_contexts.items():
+            s = ctx["suffix"]
+            cols[f"HSCI_HI_30d_prior_{s}"][i] = sum_hsci_prior(ctx["hsci_by_date"], d0, 30)
+            cols[f"event_duration_HI_admit_anchor_{s}"][i] = anchored_heat_duration_with_grace(ctx, zm, d0)
+            cols[f"days_heatwave_HI_30d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 30)
+            cols[f"days_heatwave_HI_21d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 21)
+            cols[f"days_heatwave_HI_14d_prior_{s}"][i] = count_zip_heat_days(ctx, zm, d0, 14)
 
         acc_hsci_t = acc_hsci_hi = 0.0
         acc_excd_t = acc_excd_hi = 0.0
@@ -351,7 +446,7 @@ def main() -> None:
                 if offset >= -3:
                     acc_hsci_hi_3 += v
 
-            vhi = read_zip_avg(args.mag_nc_hi, "HI_EXCDMAG", idx_daily_hi, zm, dd, False)
+            vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, dd, False)
             if not np.isnan(vhi):
                 acc_excd_hi += vhi
                 if vhi > 0:
