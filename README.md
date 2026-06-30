@@ -31,6 +31,10 @@ Build daily HI/T exceedance magnitude products:
 python scripts/build_prism_exceedance_mag.py --pct 90 --t2m-var tmax
 ```
 
+This stage keeps the reusable per-day HI/T2 files in `_HI_tmp`, matching the
+MATLAB workflow, and deletes each day's downloaded PRISM zip files and extracted
+rasters after that day is processed.
+
 Detect HI heat-wave days and HSCI:
 
 ```powershell

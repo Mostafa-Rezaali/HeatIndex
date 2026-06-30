@@ -85,6 +85,9 @@ def cleanup_day(*paths: Path) -> None:
                 shutil.rmtree(p)
             elif p.is_file():
                 p.unlink()
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            if tmp.is_file():
+                tmp.unlink()
         except OSError:
             pass
 
@@ -116,6 +119,8 @@ def build_one_day(d: datetime, args: argparse.Namespace, cache_root: Path, tmp_r
     except Exception as exc:
         print(f"Failed {ds}: {exc}")
     finally:
+        # Match the MATLAB flow: keep only the reusable HI/T2 mat, and remove
+        # this day's PRISM archives/extracted rasters after success or failure.
         cleanup_day(z_t2, z_td, d_t2, d_td)
 
 
