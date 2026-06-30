@@ -19,6 +19,7 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCTS=${PCTS:-90,95}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-64}
+THRESHOLD_WORKERS=${THRESHOLD_WORKERS:-16}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
 DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
 DATES_VAR=${DATES_VAR:-dates}
@@ -61,6 +62,7 @@ for PCT in "${PCT_LIST[@]}"; do
     --dates-mat "$DATES_MAT" \
     --dates-var "$DATES_VAR" \
     --workers "$WORKERS" \
+    --threshold-workers "$THRESHOLD_WORKERS" \
     --block-rows "$BLOCK_ROWS" \
     --keep-python-cache
 done

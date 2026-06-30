@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache-root", default="PRISM_cache")
     p.add_argument("--tmp-root", default="_HI_tmp")
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--threshold-workers", type=int, default=1)
     p.add_argument("--block-rows", type=int, default=64)
     p.add_argument("--keep-python-cache", action="store_true")
     return p.parse_args()
@@ -149,25 +150,58 @@ def threshold_for_month(
     nlon: int,
     pct: float,
     block_rows: int,
+    threshold_workers: int,
 ) -> np.ndarray:
     idx_dates = [d for d in dates_all if d.month == month_value]
     out = np.full((nlat, nlon), np.nan, dtype=np.float32)
-    for r0 in range(0, nlat, block_rows):
-        r1 = min(nlat, r0 + block_rows)
-        cube = np.full((r1 - r0, nlon, len(idx_dates)), np.nan, dtype=np.float32)
-        for k, d in enumerate(idx_dates):
-            mpath = tmp_root / f"HI_{d:%Y%m%d}.npz"
-            if not mpath.is_file():
-                print(f"    [warn] missing mat {d:%Y%m%d}")
-                continue
-            try:
-                cube[:, :, k] = load_daily_array(mpath, var_name, slice(r0, r1))
-            except Exception as exc:
-                print(f"    [warn] unreadable mat {d:%Y%m%d}: {exc}")
-                continue
-        out[r0:r1, :] = matlab_prctile_nan_last_axis(cube, pct).astype(np.float32)
-        print(f"    rows {r0 + 1}-{r1}/{nlat} done")
+    blocks = [(r0, min(nlat, r0 + block_rows)) for r0 in range(0, nlat, block_rows)]
+    worker_count = max(1, min(int(threshold_workers), len(blocks)))
+    print(f"    threshold row blocks: {len(blocks)}; workers: {worker_count}")
+    if worker_count == 1:
+        for r0, r1 in blocks:
+            br0, br1, block, warnings = threshold_block(tmp_root, idx_dates, var_name, nlon, pct, r0, r1)
+            for warning in warnings:
+                print(warning)
+            out[br0:br1, :] = block
+            print(f"    rows {br0 + 1}-{br1}/{nlat} done")
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count) as ex:
+            futures = [
+                ex.submit(threshold_block, tmp_root, idx_dates, var_name, nlon, pct, r0, r1)
+                for r0, r1 in blocks
+            ]
+            for fut in as_completed(futures):
+                br0, br1, block, warnings = fut.result()
+                for warning in warnings:
+                    print(warning)
+                out[br0:br1, :] = block
+                print(f"    rows {br0 + 1}-{br1}/{nlat} done")
     return out
+
+
+def threshold_block(
+    tmp_root: Path,
+    idx_dates: list[datetime],
+    var_name: str,
+    nlon: int,
+    pct: float,
+    r0: int,
+    r1: int,
+) -> tuple[int, int, np.ndarray, list[str]]:
+    warnings: list[str] = []
+    cube = np.full((r1 - r0, nlon, len(idx_dates)), np.nan, dtype=np.float32)
+    for k, d in enumerate(idx_dates):
+        mpath = tmp_root / f"HI_{d:%Y%m%d}.npz"
+        if not mpath.is_file():
+            warnings.append(f"    [warn] missing cache {d:%Y%m%d}")
+            continue
+        try:
+            cube[:, :, k] = load_daily_array(mpath, var_name, slice(r0, r1))
+        except Exception as exc:
+            warnings.append(f"    [warn] unreadable cache {d:%Y%m%d}: {exc}")
+            continue
+    block = matlab_prctile_nan_last_axis(cube, pct).astype(np.float32)
+    return r0, r1, block, warnings
 
 
 def create_mag_nc(
@@ -259,11 +293,11 @@ def main() -> None:
         f_t = tmp_root / f"T_THR_{pct_tag}_{mm}.npy"
         if not f_hi.is_file():
             print(f"  Month {mm:02d}: building HI threshold")
-            thr = threshold_for_month(dates_all, tmp_root, mm, "HI", nlat, nlon, args.pct, args.block_rows)
+            thr = threshold_for_month(dates_all, tmp_root, mm, "HI", nlat, nlon, args.pct, args.block_rows, args.threshold_workers)
             np.save(f_hi, thr.astype(np.float32))
         if not f_t.is_file():
             print(f"  Month {mm:02d}: building T threshold")
-            thr = threshold_for_month(dates_all, tmp_root, mm, "T2", nlat, nlon, args.pct, args.block_rows)
+            thr = threshold_for_month(dates_all, tmp_root, mm, "T2", nlat, nlon, args.pct, args.block_rows, args.threshold_workers)
             np.save(f_t, thr.astype(np.float32))
 
     if build_hi_mag or build_t_mag:

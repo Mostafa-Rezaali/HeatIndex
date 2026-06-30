@@ -18,6 +18,7 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-64}
+THRESHOLD_WORKERS=${THRESHOLD_WORKERS:-16}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 DATES_MAT=${DATES_MAT:-Dir_MJJAS_HI.mat}
@@ -45,6 +46,7 @@ cd "$DATA_DIR"
   --dates-mat "$DATES_MAT" \
   --dates-var "$DATES_VAR" \
   --workers "$WORKERS" \
+  --threshold-workers "$THRESHOLD_WORKERS" \
   --block-rows "$BLOCK_ROWS"
 
 echo "HEATINDEX PRISM EXCEEDANCE MAG BUILD COMPLETE"
