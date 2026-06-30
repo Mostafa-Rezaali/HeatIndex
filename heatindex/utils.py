@@ -137,7 +137,9 @@ def collect_strings_from_mat_object(obj, preferred_fields: tuple[str, ...] = ())
                 collect(value)
             elif value.dtype == object:
                 for item in value.ravel():
-                    add_value(item)
+                    collect(item)
+        elif hasattr(value, "_fieldnames"):
+            collect(value)
 
     def collect(value) -> None:
         if isinstance(value, np.ndarray) and value.dtype.names:
