@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 import math
+import re
 import time
 from typing import Callable, Iterable
 
@@ -80,7 +81,10 @@ def save_mat_variable(path: str | Path, name: str, value) -> None:
 
 
 def load_dates_from_mat(path: str | Path, var_name: str = "dates") -> list[datetime]:
-    raw = np.ravel(load_mat_variable(path, var_name))
+    try:
+        raw = np.ravel(load_mat_variable(path, var_name))
+    except KeyError:
+        raw = load_dates_fallback_from_dir_struct(path)
     out: list[datetime] = []
     for x in raw:
         if isinstance(x, datetime):
@@ -91,6 +95,80 @@ def load_dates_from_mat(path: str | Path, var_name: str = "dates") -> list[datet
             s = str(x)
             out.append(datetime.fromisoformat(s))
     return out
+
+
+def load_dates_fallback_from_dir_struct(path: str | Path) -> np.ndarray:
+    """Derive dates from MATLAB dir-style structs when a direct dates variable is absent."""
+    vars_available = mat_variable_names(path)
+    for candidate in ("Dir_filtered", "Dir"):
+        if candidate not in vars_available:
+            continue
+        obj = load_mat_variable(path, candidate)
+        strings = collect_strings_from_mat_object(obj, preferred_fields=("name", "folder"))
+        parsed = parse_dates_from_strings(strings)
+        if parsed:
+            return np.array(parsed, dtype=object)
+    available = ", ".join(vars_available) if vars_available else "<none>"
+    raise KeyError(
+        f"No '{path}' dates variable found and no dates could be derived from "
+        f"Dir_filtered/Dir. Available variables: {available}"
+    )
+
+
+def collect_strings_from_mat_object(obj, preferred_fields: tuple[str, ...] = ()) -> list[str]:
+    out: list[str] = []
+
+    def add_value(value) -> None:
+        if isinstance(value, bytes):
+            out.append(value.decode(errors="ignore"))
+        elif isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, np.ndarray):
+            if value.dtype.kind in {"U", "S"}:
+                if value.ndim == 0:
+                    out.append(str(value.item()))
+                else:
+                    flat = value.ravel()
+                    if flat.size and all(str(x).size == 1 for x in flat[: min(flat.size, 32)]):
+                        out.append("".join(str(x) for x in flat))
+                    else:
+                        out.extend(str(x) for x in flat)
+            elif value.dtype.names:
+                collect(value)
+            elif value.dtype == object:
+                for item in value.ravel():
+                    add_value(item)
+
+    def collect(value) -> None:
+        if isinstance(value, np.ndarray) and value.dtype.names:
+            for field in preferred_fields + tuple(n for n in value.dtype.names if n not in preferred_fields):
+                if field in value.dtype.names:
+                    add_value(value[field])
+            return
+        if hasattr(value, "_fieldnames"):
+            for field in preferred_fields + tuple(n for n in value._fieldnames if n not in preferred_fields):
+                if hasattr(value, field):
+                    add_value(getattr(value, field))
+            return
+        add_value(value)
+
+    collect(obj)
+    return out
+
+
+def parse_dates_from_strings(strings: Iterable[str]) -> list[datetime]:
+    found: list[datetime] = []
+    seen: set[datetime] = set()
+    for s in strings:
+        for token in re.findall(r"(?<!\d)(19\d{6}|20\d{6})(?!\d)", str(s)):
+            try:
+                dt = datetime.strptime(token, "%Y%m%d")
+            except ValueError:
+                continue
+            if dt not in seen:
+                seen.add(dt)
+                found.append(dt)
+    return found
 
 
 def yyyymmdd(dt: datetime) -> int:
