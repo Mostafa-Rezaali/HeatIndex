@@ -16,6 +16,7 @@ CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
+AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
 export PYTHONUNBUFFERED=1
@@ -23,9 +24,11 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-module load git || true
 cd "$CODE_DIR"
-git pull --ff-only origin master
+if [ "$AUTO_GIT_PULL" = "1" ]; then
+  module load git || true
+  git pull --ff-only origin master
+fi
 
 export PYTHONPATH="$CODE_DIR"
 "$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py"

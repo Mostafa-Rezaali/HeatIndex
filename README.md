@@ -70,6 +70,10 @@ cd "$CODE_DIR"
 git pull --ff-only origin master
 ```
 
+GitHub HTTPS requires a personal access token or cached credentials. The Slurm
+scripts do not run `git pull` by default, so batch jobs use the code already in
+`CODE_DIR`. Set `AUTO_GIT_PULL=1` only after Git credentials are configured.
+
 The repository includes HiPerGator submission scripts with `--mem=500G`. To
 submit the full pipeline with dependencies:
 

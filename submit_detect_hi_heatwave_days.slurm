@@ -18,6 +18,7 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-1}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
+AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
 export PYTHONUNBUFFERED=1
@@ -25,9 +26,11 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-module load git || true
 cd "$CODE_DIR"
-git pull --ff-only origin master
+if [ "$AUTO_GIT_PULL" = "1" ]; then
+  module load git || true
+  git pull --ff-only origin master
+fi
 
 export PYTHONPATH="$CODE_DIR"
 "$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/detect_hi_heatwave_days.py"

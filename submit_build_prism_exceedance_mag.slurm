@@ -19,6 +19,7 @@ PCT=${PCT:-90}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-16}
 BLOCK_ROWS=${BLOCK_ROWS:-64}
+AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
 export PYTHONUNBUFFERED=1
@@ -26,9 +27,11 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-module load git || true
 cd "$CODE_DIR"
-git pull --ff-only origin master
+if [ "$AUTO_GIT_PULL" = "1" ]; then
+  module load git || true
+  git pull --ff-only origin master
+fi
 
 export PYTHONPATH="$CODE_DIR"
 "$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/build_prism_exceedance_mag.py"
