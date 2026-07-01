@@ -230,6 +230,45 @@ def make_date_index(dates: pd.DatetimeIndex) -> dict[pd.Timestamp, int]:
     return {pd.Timestamp(d).normalize(): i for i, d in enumerate(dates)}
 
 
+def spatial_time_slab(var, ti: int, zm: ZipGridMask) -> np.ndarray | None:
+    dims = tuple(str(d).lower() for d in var.dimensions)
+    try:
+        time_axis = dims.index("time")
+    except ValueError:
+        time_axis = len(dims) - 1
+
+    row_axis = next((i for i, d in enumerate(dims) if d in {"lat", "y"}), None)
+    col_axis = next((i for i, d in enumerate(dims) if d in {"lon", "x"}), None)
+    if row_axis is None or col_axis is None or row_axis == col_axis:
+        candidates = [i for i in range(len(dims)) if i != time_axis]
+        if len(candidates) < 2:
+            return None
+        row_axis, col_axis = candidates[:2]
+
+    if ti >= var.shape[time_axis] or zm.r_start >= var.shape[row_axis] or zm.c_start >= var.shape[col_axis]:
+        return None
+
+    r_stop = min(zm.r_start + zm.r_count, var.shape[row_axis])
+    c_stop = min(zm.c_start + zm.c_count, var.shape[col_axis])
+    slices = [slice(None)] * len(dims)
+    slices[time_axis] = ti
+    slices[row_axis] = slice(zm.r_start, r_stop)
+    slices[col_axis] = slice(zm.c_start, c_stop)
+
+    slab = masked_to_nan(var[tuple(slices)])
+    remaining_axes = [axis for axis in range(len(dims)) if axis != time_axis]
+    row_pos = remaining_axes.index(row_axis)
+    col_pos = remaining_axes.index(col_axis)
+    slab = np.asarray(slab, dtype=np.float64)
+    if slab.ndim != 2:
+        slab = np.squeeze(slab)
+    if slab.ndim != 2:
+        return None
+    if (row_pos, col_pos) != (0, 1):
+        slab = np.moveaxis(slab, (row_pos, col_pos), (0, 1))
+    return slab
+
+
 def read_zip_avg(nc_file, var_name, date_index, zm: ZipGridMask, target_date, zero_if_date_missing: bool):
     target = pd.Timestamp(target_date).normalize()
     ti = date_index.get(target)
@@ -242,23 +281,10 @@ def read_zip_avg(nc_file, var_name, date_index, zm: ZipGridMask, target_date, ze
 
     ds = cached_dataset(nc_file)
     var = ds[var_name]
-    if ti >= var.shape[2]:
-        val = 0.0 if zero_if_date_missing else np.nan
-        _ZIP_AVG_CACHE[cache_key] = val
-        return val
-    if zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
+    slab = spatial_time_slab(var, ti, zm)
+    if slab is None:
         _ZIP_AVG_CACHE[cache_key] = np.nan
         return np.nan
-    r_stop = min(zm.r_start + zm.r_count, var.shape[0])
-    c_stop = min(zm.c_start + zm.c_count, var.shape[1])
-    slab = masked_to_nan(
-        var[
-            zm.r_start : r_stop,
-            zm.c_start : c_stop,
-            ti,
-        ]
-    )
-    slab = np.asarray(slab, dtype=np.float64)
     mask = zm.mask[: slab.shape[0], : slab.shape[1]]
     slab[~mask] = np.nan
     good = np.isfinite(slab)
@@ -324,18 +350,11 @@ def find_backward_nearest_heatwave_cell(nc_file, var_name, date_index, dates_vec
     for d in range(1, int((target - min(valid_dates)).days) + 1):
         dd = target - pd.Timedelta(days=d)
         ti = date_index.get(dd)
-        if ti is None or ti >= var.shape[2] or zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
+        if ti is None:
             continue
-        r_stop = min(zm.r_start + zm.r_count, var.shape[0])
-        c_stop = min(zm.c_start + zm.c_count, var.shape[1])
-        slab = masked_to_nan(
-            var[
-                zm.r_start : r_stop,
-                zm.c_start : c_stop,
-                ti,
-            ]
-        )
-        slab = np.asarray(slab, dtype=np.float64)
+        slab = spatial_time_slab(var, ti, zm)
+        if slab is None:
+            continue
         mask = zm.mask[: slab.shape[0], : slab.shape[1]]
         slab[~mask] = np.nan
         pos_mask = np.isfinite(slab) & (slab > 0)
