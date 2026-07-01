@@ -9,9 +9,9 @@ workflow:
 3. Append HSCI and ZIP-level exposure metrics to the hospital-admission CSV.
 
 The numerical formulas and decision rules were translated directly from the
-MATLAB scripts. The Python version implements the usual by-year consecutive-run rule with a default
-minimum duration of 3 days; pass `--min-duration` if the original helper used a
-different value.
+MATLAB scripts. The Python HSCI-H detector uses a default minimum duration of
+3 positive-HSCI days and allows a 1-day non-HSCI grace gap to bridge an event;
+pass `--min-duration` or `--grace-days` to override those values.
 
 ## Setup
 
@@ -49,6 +49,10 @@ Detect HI heat-wave days and HSCI:
 ```powershell
 python scripts/detect_hi_heatwave_days.py --pct 90
 ```
+
+The default HSCI-H heatwave persistence rule is `--min-duration 3
+--grace-days 1`. The grace day can bridge an event, but it is not written as an
+HSCI day.
 
 Append exposure metrics to hospital-admission records:
 

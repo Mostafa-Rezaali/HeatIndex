@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pixel-size-km", type=float, default=0.8)
     p.add_argument("--cluster-cutoff-km", type=float, default=1000.0)
     p.add_argument("--min-duration", type=int, default=3)
+    p.add_argument("--grace-days", type=int, default=1)
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--write-workers", type=int, default=1)
     p.add_argument("--keep-checkpoints", action="store_true")
@@ -196,25 +197,56 @@ def process_one_day(
     )
 
 
-def detect_heatwaves_by_year(is_hw: np.ndarray, years: np.ndarray, min_duration: int) -> np.ndarray:
+def detect_heatwaves_by_year(
+    is_hw: np.ndarray,
+    years: np.ndarray,
+    min_duration: int,
+    grace_days: int,
+) -> np.ndarray:
     events = np.zeros(is_hw.shape[0], dtype=np.int32)
     event_id = 1
     for yr in np.unique(years):
         idx = np.nonzero(years == yr)[0]
-        start = None
-        for pos in list(idx) + [None]:
-            active = pos is not None and bool(is_hw[pos])
-            if active and start is None:
-                start = pos
-            if (not active) and start is not None:
-                end = prev
-                run = np.arange(start, end + 1)
-                if run.size >= min_duration:
-                    events[run] = event_id
-                    event_id += 1
-                start = None
-            prev = pos
+        pos = 0
+        while pos < idx.size:
+            if not is_hw[idx[pos]]:
+                pos += 1
+                continue
+
+            run_positions = []
+            hot_count = 0
+            gap_count = 0
+            j = pos
+
+            while j < idx.size:
+                day_idx = idx[j]
+                if is_hw[day_idx]:
+                    run_positions.append(day_idx)
+                    hot_count += 1
+                    gap_count = 0
+                    j += 1
+                    continue
+
+                if gap_count < grace_days and j + 1 < idx.size and is_hw[idx[j + 1]]:
+                    gap_count += 1
+                    j += 1
+                    continue
+
+                break
+
+            if hot_count >= min_duration:
+                events[np.asarray(run_positions, dtype=np.int64)] = event_id
+                event_id += 1
+            pos = max(j, pos + 1)
     return events
+
+
+def detection_checkpoint_matches(det: dict, idx_all: np.ndarray, min_duration: int, grace_days: int) -> bool:
+    return (
+        int(det.get("min_duration", -1)) == int(min_duration)
+        and int(det.get("grace_days", -1)) == int(grace_days)
+        and np.array_equal(det.get("idx_all"), idx_all)
+    )
 
 
 def sets_overlap(a: np.ndarray, b: np.ndarray) -> bool:
@@ -301,10 +333,29 @@ def link_events_and_dynamics(day_idx, dates, day_clusters, day_cents, lat_grid, 
     return event_ids_per_day, clusters_df, events_df, n_clusters, n_merges, n_splits, min_pair_km, mean_pair_km, d_mean_pair_km
 
 
-def create_output_nc(path: Path, ny: int, nx: int, n_hw: int, x: np.ndarray, y: np.ndarray, pct: int, arrays: dict):
+def create_output_nc(
+    path: Path,
+    ny: int,
+    nx: int,
+    n_hw: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    pct: int,
+    arrays: dict,
+    min_duration: int,
+    grace_days: int,
+):
     if path.exists():
         path.unlink()
     ds = netCDF4.Dataset(path, "w", format="NETCDF4")
+    ds.percentile = int(pct)
+    ds.min_duration_days = int(min_duration)
+    ds.grace_days = int(grace_days)
+    ds.heatwave_rule = (
+        "At least min_duration_days positive-HSCI days, allowing up to "
+        "grace_days consecutive non-HSCI days to bridge an event; grace days "
+        "are not written as HSCI days."
+    )
     ds.createDimension("y", ny)
     ds.createDimension("x", nx)
     ds.createDimension("time", n_hw)
@@ -388,11 +439,21 @@ def main() -> None:
     n_t = len(idx_all)
     print(f"Total MJJAS daily slices in MAG file: {n_t}")
 
+    det = None
     if det_ckpt.exists():
-        print(f"Found detection checkpoint {det_ckpt}; loading and skipping detection.")
+        print(f"Found detection checkpoint {det_ckpt}; checking compatibility.")
         with det_ckpt.open("rb") as f:
-            det = pickle.load(f)
-    else:
+            candidate = pickle.load(f)
+        if detection_checkpoint_matches(candidate, idx_all, args.min_duration, args.grace_days):
+            print("Detection checkpoint matches min-duration/grace-days; skipping detection.")
+            det = candidate
+        else:
+            print(
+                "Detection checkpoint does not match min-duration/grace-days "
+                "or time index; rebuilding detection."
+            )
+
+    if det is None:
         region_area = float(np.sum(load_mat_variable(args.area_mat, args.area_var)))
         is_hw = np.zeros(n_t, dtype=bool)
         ahsci_all = np.full(n_t, np.nan, dtype=np.float32)
@@ -431,7 +492,7 @@ def main() -> None:
             cluster_cents[i] = res.cluster_cents
 
         years = np.array([d.year for d in dates], dtype=np.int32)
-        hw_events = detect_heatwaves_by_year(is_hw, years, args.min_duration)
+        hw_events = detect_heatwaves_by_year(is_hw, years, args.min_duration, args.grace_days)
         keep_hw = hw_events != 0
         hw_idx = np.nonzero(keep_hw)[0]
         hw_dates = [dates[i] for i in hw_idx]
@@ -474,6 +535,8 @@ def main() -> None:
             "isHW": is_hw,
             "dates": dates,
             "months": np.array([d.month for d in dates], dtype=np.int16),
+            "min_duration": int(args.min_duration),
+            "grace_days": int(args.grace_days),
         }
         with det_ckpt.open("wb") as f:
             pickle.dump(det, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -492,7 +555,13 @@ def main() -> None:
     if out_nc.exists() and write_ckpt.exists():
         with write_ckpt.open("rb") as f:
             w = pickle.load(f)
-        if w.get("nHW_keep") == n_hw and np.array_equal(w.get("HW_Time"), hw_time):
+        write_ckpt_matches = (
+            w.get("nHW_keep") == n_hw
+            and np.array_equal(w.get("HW_Time"), hw_time)
+            and int(w.get("min_duration", -1)) == int(args.min_duration)
+            and int(w.get("grace_days", -1)) == int(args.grace_days)
+        )
+        if write_ckpt_matches:
             fresh = False
             ti_start = int(w.get("last_written", -1)) + 1
             print(f"Resuming EXCD write at slice {ti_start + 1}/{n_hw} (file + checkpoint match).")
@@ -512,10 +581,19 @@ def main() -> None:
             "mean_pair_km": det["mean_pair_km"],
             "d_mean_pair_km": det["d_mean_pair_km"],
         }
-        out = create_output_nc(out_nc, ny, nx, n_hw, x, y, pct, arrays)
+        out = create_output_nc(out_nc, ny, nx, n_hw, x, y, pct, arrays, args.min_duration, args.grace_days)
         out.close()
         with write_ckpt.open("wb") as f:
-            pickle.dump({"last_written": -1, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
+            pickle.dump(
+                {
+                    "last_written": -1,
+                    "nHW_keep": n_hw,
+                    "HW_Time": hw_time,
+                    "min_duration": int(args.min_duration),
+                    "grace_days": int(args.grace_days),
+                },
+                f,
+            )
 
     write_workers = max(1, int(args.write_workers))
     print(f"Writing EXCD slices {ti_start + 1}..{n_hw} of {n_hw} to {out_nc} ...")
@@ -556,7 +634,16 @@ def main() -> None:
                     retry(lambda k=k, excd=excd: dst["EXCD"].__setitem__((slice(None), slice(None), k), excd), f"EXCD slice {k + 1}")
                     if (k + 1) % 25 == 0 or k == ti_start or k + 1 == n_hw:
                         with write_ckpt.open("wb") as f:
-                            pickle.dump({"last_written": k, "nHW_keep": n_hw, "HW_Time": hw_time}, f)
+                            pickle.dump(
+                                {
+                                    "last_written": k,
+                                    "nHW_keep": n_hw,
+                                    "HW_Time": hw_time,
+                                    "min_duration": int(args.min_duration),
+                                    "grace_days": int(args.grace_days),
+                                },
+                                f,
+                            )
                         print(f"Wrote {k + 1:5d}/{n_hw:5d} {det['hw_dates'][k]:%Y-%m-%d}")
     finally:
         if executor is not None:

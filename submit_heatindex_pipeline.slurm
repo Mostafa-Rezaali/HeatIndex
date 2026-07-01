@@ -27,6 +27,8 @@ DATES_VAR=${DATES_VAR:-dates}
 
 DETECT_WORKERS=${DETECT_WORKERS:-64}
 DETECT_WRITE_WORKERS=${DETECT_WRITE_WORKERS:-64}
+MIN_DURATION=${MIN_DURATION:-3}
+GRACE_DAYS=${GRACE_DAYS:-1}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
@@ -79,6 +81,8 @@ for PCT in "${PCT_LIST[@]}"; do
   "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
     --pct "$PCT" \
     --area-mat "$AREA_MAT" \
+    --min-duration "$MIN_DURATION" \
+    --grace-days "$GRACE_DAYS" \
     --workers "$DETECT_WORKERS" \
     --write-workers "$DETECT_WRITE_WORKERS"
 done

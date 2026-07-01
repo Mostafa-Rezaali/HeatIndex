@@ -18,6 +18,8 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-64}
 DETECT_WRITE_WORKERS=${DETECT_WRITE_WORKERS:-64}
+MIN_DURATION=${MIN_DURATION:-3}
+GRACE_DAYS=${GRACE_DAYS:-1}
 AREA_MAT=${AREA_MAT:-/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
@@ -40,6 +42,8 @@ cd "$DATA_DIR"
 "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
   --pct "$PCT" \
   --area-mat "$AREA_MAT" \
+  --min-duration "$MIN_DURATION" \
+  --grace-days "$GRACE_DAYS" \
   --workers "$DETECT_WORKERS" \
   --write-workers "$DETECT_WRITE_WORKERS"
 
