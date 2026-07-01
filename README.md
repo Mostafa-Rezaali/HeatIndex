@@ -9,9 +9,7 @@ workflow:
 3. Append HSCI and ZIP-level exposure metrics to the hospital-admission CSV.
 
 The numerical formulas and decision rules were translated directly from the
-MATLAB scripts. The main known dependency gap is that the original MATLAB helper
-`detectHeatwavesByYear` was not included in the provided code. The Python
-version implements the usual by-year consecutive-run rule with a default
+MATLAB scripts. The Python version implements the usual by-year consecutive-run rule with a default
 minimum duration of 3 days; pass `--min-duration` if the original helper used a
 different value.
 
