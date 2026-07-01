@@ -5,3 +5,4 @@ netCDF4
 rasterio
 requests
 scikit-image
+matplotlib
