@@ -235,29 +235,40 @@ def read_zip_avg(nc_file, var_name, date_index, zm: ZipGridMask, target_date, ze
     ti = date_index.get(target)
     if ti is None:
         return 0.0 if zero_if_date_missing else np.nan
-    with netCDF4.Dataset(nc_file) as ds:
-        var = ds[var_name]
-        if ti >= var.shape[2]:
-            return 0.0 if zero_if_date_missing else np.nan
-        if zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
-            return np.nan
-        r_stop = min(zm.r_start + zm.r_count, var.shape[0])
-        c_stop = min(zm.c_start + zm.c_count, var.shape[1])
-        slab = masked_to_nan(
-            var[
-                zm.r_start : r_stop,
-                zm.c_start : c_stop,
-                ti,
-            ]
-        )
+    cache_key = zip_avg_cache_key(nc_file, var_name, ti, zm, zero_if_date_missing)
+    cached = _ZIP_AVG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    ds = cached_dataset(nc_file)
+    var = ds[var_name]
+    if ti >= var.shape[2]:
+        val = 0.0 if zero_if_date_missing else np.nan
+        _ZIP_AVG_CACHE[cache_key] = val
+        return val
+    if zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
+        _ZIP_AVG_CACHE[cache_key] = np.nan
+        return np.nan
+    r_stop = min(zm.r_start + zm.r_count, var.shape[0])
+    c_stop = min(zm.c_start + zm.c_count, var.shape[1])
+    slab = masked_to_nan(
+        var[
+            zm.r_start : r_stop,
+            zm.c_start : c_stop,
+            ti,
+        ]
+    )
     slab = np.asarray(slab, dtype=np.float64)
     mask = zm.mask[: slab.shape[0], : slab.shape[1]]
     slab[~mask] = np.nan
     good = np.isfinite(slab)
     if not np.any(good):
+        _ZIP_AVG_CACHE[cache_key] = np.nan
         return np.nan
     val = float(np.nanmean(slab[good]))
-    return 0.0 if np.isnan(val) else val
+    val = 0.0 if np.isnan(val) else val
+    _ZIP_AVG_CACHE[cache_key] = val
+    return val
 
 
 def sum_hsci_prior(hsci_by_date, admit_date, days: int) -> float:
@@ -308,34 +319,37 @@ def find_backward_nearest_heatwave_cell(nc_file, var_name, date_index, dates_vec
     if max_back < 1:
         return np.nan, np.nan, np.nan
 
-    with netCDF4.Dataset(nc_file) as ds:
-        var = ds[var_name]
-        for d in range(1, int((target - min(valid_dates)).days) + 1):
-            dd = target - pd.Timedelta(days=d)
-            ti = date_index.get(dd)
-            if ti is None:
-                continue
-            slab = masked_to_nan(
-                var[
-                    zm.r_start : zm.r_start + zm.r_count,
-                    zm.c_start : zm.c_start + zm.c_count,
-                    ti,
-                ]
-            )
-            slab = np.asarray(slab, dtype=np.float64)
-            slab[~zm.mask] = np.nan
-            pos_mask = np.isfinite(slab) & (slab > 0)
-            if not np.any(pos_mask):
-                continue
-            rr_local, cc_local = np.nonzero(pos_mask)
-            r_abs = zm.r_start + rr_local
-            c_abs = zm.c_start + cc_local
-            cand_lats = lat_grid[r_abs]
-            cand_lons = lon_grid[c_abs]
-            cand_vals = slab[pos_mask]
-            dists = haversine_km(zm.zip_lat, zm.zip_lon, cand_lats, cand_lons)
-            idx_min = int(np.argmin(dists))
-            return float(d), float(dists[idx_min]), float(cand_vals[idx_min])
+    ds = cached_dataset(nc_file)
+    var = ds[var_name]
+    for d in range(1, int((target - min(valid_dates)).days) + 1):
+        dd = target - pd.Timedelta(days=d)
+        ti = date_index.get(dd)
+        if ti is None or ti >= var.shape[2] or zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
+            continue
+        r_stop = min(zm.r_start + zm.r_count, var.shape[0])
+        c_stop = min(zm.c_start + zm.c_count, var.shape[1])
+        slab = masked_to_nan(
+            var[
+                zm.r_start : r_stop,
+                zm.c_start : c_stop,
+                ti,
+            ]
+        )
+        slab = np.asarray(slab, dtype=np.float64)
+        mask = zm.mask[: slab.shape[0], : slab.shape[1]]
+        slab[~mask] = np.nan
+        pos_mask = np.isfinite(slab) & (slab > 0)
+        if not np.any(pos_mask):
+            continue
+        rr_local, cc_local = np.nonzero(pos_mask)
+        r_abs = zm.r_start + rr_local
+        c_abs = zm.c_start + cc_local
+        cand_lats = lat_grid[r_abs]
+        cand_lons = lon_grid[c_abs]
+        cand_vals = slab[pos_mask]
+        dists = haversine_km(zm.zip_lat, zm.zip_lon, cand_lats, cand_lons)
+        idx_min = int(np.argmin(dists))
+        return float(d), float(dists[idx_min]), float(cand_vals[idx_min])
     return np.nan, np.nan, np.nan
 
 
@@ -367,6 +381,30 @@ def make_exposure_category(x):
 
 
 _HOSPITAL_CONTEXT = {}
+_NC_DATASET_CACHE = {}
+_ZIP_AVG_CACHE = {}
+
+
+def cached_dataset(path):
+    key = str(path)
+    ds = _NC_DATASET_CACHE.get(key)
+    if ds is None:
+        ds = netCDF4.Dataset(key)
+        _NC_DATASET_CACHE[key] = ds
+    return ds
+
+
+def zip_avg_cache_key(nc_file, var_name, ti, zm: ZipGridMask, zero_if_date_missing: bool):
+    return (
+        str(nc_file),
+        str(var_name),
+        int(ti),
+        int(zm.r_start),
+        int(zm.r_count),
+        int(zm.c_start),
+        int(zm.c_count),
+        bool(zero_if_date_missing),
+    )
 
 
 def init_hospital_worker(context):
