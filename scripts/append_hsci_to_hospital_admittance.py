@@ -109,10 +109,18 @@ def read_lat_lon(path: str | Path):
 
 
 def find_column(columns, candidates):
-    lower = {c.lower(): c for c in columns}
+    def norm(value):
+        return re.sub(r"[^a-z0-9]", "", str(value).strip().lower())
+
+    lower = {str(c).strip().lower(): c for c in columns}
+    compact = {norm(c): c for c in columns}
     for cand in candidates:
-        if cand in lower:
-            return lower[cand]
+        cand_lc = str(cand).strip().lower()
+        if cand_lc in lower:
+            return lower[cand_lc]
+        cand_norm = norm(cand)
+        if cand_norm in compact:
+            return compact[cand_norm]
     return None
 
 
@@ -136,7 +144,7 @@ def build_zip_masks(args, needed_zips, lat_grid, lon_grid):
 
     print(f"Loading ZIP centroid CSV: {args.zip_csv}")
     z = pd.read_csv(args.zip_csv)
-    zip_col = find_column(z.columns, {"zip", "zipcode", "zip_code", "zip5", "zcta", "zcta5", "postalcode"})
+    zip_col = find_column(z.columns, {"zip", "zipcode", "zip_code", "zip5", "zcta", "zcta5", "postal code", "postalcode"})
     lat_col = find_column(z.columns, {"lat", "latitude"})
     lon_col = find_column(z.columns, {"lon", "lng", "long", "longitude"})
     if zip_col is None or lat_col is None or lon_col is None:
