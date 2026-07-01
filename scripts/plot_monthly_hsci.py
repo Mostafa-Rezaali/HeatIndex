@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Plot accumulated HSCI/AHSCI from an HSCI NetCDF file."
     )
-    p.add_argument("--hsci-nc", default="HI_EXCD_MJJAS_HWdays_90.nc")
+    p.add_argument("--hsci-nc", default="EXCD_MJJAS_HWdays_90.nc")
     p.add_argument("--out-csv", default="annual_accumulated_AHSCI.csv")
     p.add_argument("--out-png", default="annual_accumulated_AHSCI.png")
     p.add_argument(

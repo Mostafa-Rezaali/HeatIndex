@@ -38,9 +38,11 @@ class DayResult:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Detect HI heat-wave days and write HSCI NetCDF.")
+    p = argparse.ArgumentParser(description="Detect heat-wave days and write HSCI/HSCI-H NetCDF.")
+    p.add_argument("--measure", choices=("t", "hi"), default="hi")
     p.add_argument("--pct", type=int, default=90)
     p.add_argument("--mag-nc", default=None)
+    p.add_argument("--mag-var", default=None)
     p.add_argument("--area-mat", default="/blue/nessie/mostafarezaali/Research_Project/DayMet_FL/CR_Areas.mat")
     p.add_argument("--area-var", default="Area")
     p.add_argument("--out-nc", default=None)
@@ -57,6 +59,33 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def measure_config(args: argparse.Namespace) -> dict[str, str]:
+    pct = args.pct
+    if args.measure == "t":
+        return {
+            "kind": "t",
+            "mag_var": args.mag_var or "T_EXCDMAG",
+            "mag_nc": args.mag_nc or f"T_EXCDMAG_daily_1981_2025_{pct}.nc",
+            "out_nc": args.out_nc or f"EXCD_MJJAS_HWdays_{pct}.nc",
+            "det_ckpt": args.det_ckpt or f"T_EXCD_det_ckpt_{pct}.pkl",
+            "write_ckpt": args.write_ckpt or f"T_EXCD_write_ckpt_{pct}.pkl",
+            "file_prefix": f"T_EXCD_{pct}",
+            "index_name": "HSCI",
+            "source_label": "daily maximum temperature",
+        }
+    return {
+        "kind": "hi",
+        "mag_var": args.mag_var or "HI_EXCDMAG",
+        "mag_nc": args.mag_nc or f"HI_EXCDMAG_daily_1981_2025_{pct}.nc",
+        "out_nc": args.out_nc or f"HI_EXCD_MJJAS_HWdays_{pct}.nc",
+        "det_ckpt": args.det_ckpt or f"HI_EXCD_det_ckpt_{pct}.pkl",
+        "write_ckpt": args.write_ckpt or f"HI_EXCD_write_ckpt_{pct}.pkl",
+        "file_prefix": f"HI_EXCD_{pct}",
+        "index_name": "HSCI-H",
+        "source_label": "heat index",
+    }
+
+
 def read_grid_vectors(nc_path: Path) -> tuple[np.ndarray, np.ndarray]:
     with netCDF4.Dataset(nc_path) as ds:
         if "lat" in ds.variables and "lon" in ds.variables:
@@ -70,10 +99,10 @@ def read_grid_vectors(nc_path: Path) -> tuple[np.ndarray, np.ndarray]:
     return y, x
 
 
-def read_mag_time(nc_path: Path) -> tuple[np.ndarray, list[datetime], np.ndarray, tuple[int, int, int]]:
+def read_mag_time(nc_path: Path, var_name: str) -> tuple[np.ndarray, list[datetime], np.ndarray, tuple[int, int, int]]:
     with netCDF4.Dataset(nc_path) as ds:
         tvec = np.asarray(ds["time"][:], dtype=np.float64)
-        shape = ds["HI_EXCDMAG"].shape
+        shape = ds[var_name].shape
     dates_all = yyyymmdd_to_datetime(tvec)
     keep = np.array([5 <= d.month <= 9 for d in dates_all], dtype=bool)
     idx_all = np.nonzero(keep)[0]
@@ -98,6 +127,7 @@ def restore_mask_from_indices(shape: tuple[int, int], idx: np.ndarray) -> np.nda
 
 def process_one_day(
     mag_nc: str,
+    var_name: str,
     ti_nc: int,
     ny: int,
     nx: int,
@@ -109,7 +139,7 @@ def process_one_day(
     cluster_cutoff_km: float,
 ) -> DayResult:
     with netCDF4.Dataset(mag_nc) as ds:
-        excd = masked_to_nan(ds["HI_EXCDMAG"][:, :, ti_nc]).astype(np.float32)
+        excd = masked_to_nan(ds[var_name][:, :, ti_nc]).astype(np.float32)
 
     empty = DayResult(False, np.nan, np.nan, np.nan, np.array([], dtype=np.uint32), [np.array([], dtype=np.uint32)], np.zeros((0, 2)))
     if np.count_nonzero(excd > 0) <= 90:
@@ -227,7 +257,7 @@ def detect_heatwaves_by_year(
                     j += 1
                     continue
 
-                # Grace is based on post-rule HSCI-H days: this gap is allowed
+                # Grace is based on post-rule HSCI/HSCI-H days: this gap is allowed
                 # only between two days that passed the spatial/min-area rules.
                 if gap_count < grace_days and j + 1 < idx.size and is_hw[idx[j + 1]]:
                     gap_count += 1
@@ -243,11 +273,20 @@ def detect_heatwaves_by_year(
     return events
 
 
-def detection_checkpoint_matches(det: dict, idx_all: np.ndarray, min_duration: int, grace_days: int) -> bool:
+def detection_checkpoint_matches(
+    det: dict,
+    idx_all: np.ndarray,
+    min_duration: int,
+    grace_days: int,
+    mag_var: str,
+    index_name: str,
+) -> bool:
     return (
         int(det.get("min_duration", -1)) == int(min_duration)
         and int(det.get("grace_days", -1)) == int(grace_days)
         and np.array_equal(det.get("idx_all"), idx_all)
+        and det.get("mag_var") == mag_var
+        and det.get("index_name") == index_name
     )
 
 
@@ -346,17 +385,23 @@ def create_output_nc(
     arrays: dict,
     min_duration: int,
     grace_days: int,
+    mag_var: str,
+    index_name: str,
+    source_label: str,
 ):
     if path.exists():
         path.unlink()
     ds = netCDF4.Dataset(path, "w", format="NETCDF4")
     ds.percentile = int(pct)
+    ds.source_exceedance_variable = mag_var
+    ds.index_name = index_name
+    ds.source_measure = source_label
     ds.min_duration_days = int(min_duration)
     ds.grace_days = int(grace_days)
     ds.heatwave_rule = (
-        "At least min_duration_days valid HSCI-H days after spatial/min-area "
+        "At least min_duration_days valid HSCI/HSCI-H days after spatial/min-area "
         "heatwave rules, allowing up to grace_days consecutive post-rule "
-        "non-HSCI days to bridge an event; grace days are not written as HSCI "
+        "non-HSCI/HSCI-H days to bridge an event; grace days are not written as HSCI "
         "days."
     )
     ds.createDimension("y", ny)
@@ -378,7 +423,10 @@ def create_output_nc(
         ("d_mean_pair_km", "f4"),
     ]:
         ds.createVariable(name, dtype, ("time",))
-    ds["EXCD"].long_name = f"Daily exceedance magnitude (HI - climatological monthly P{pct}), pruned and hull-restricted"
+    ds["EXCD"].long_name = (
+        f"Daily exceedance magnitude ({source_label} - climatological monthly P{pct}), "
+        "pruned and hull-restricted"
+    )
     ds["EXCD"].units = "degree_Celsius"
     ds["time"].long_name = "date as YYYYMMDD"
     ds["time"].units = "YYYYMMDD"
@@ -386,7 +434,7 @@ def create_output_nc(
     ds["x"].units = "degree_east"
     ds["y"].long_name = "Latitude"
     ds["y"].units = "degree_north"
-    ds["HSCI"].long_name = "daily HSCI (m_i * a_i)"
+    ds["HSCI"].long_name = f"daily {index_name} (m_i * a_i)"
     ds["HSCI"].units = "degree_Celsius"
     ds["area_km2"].long_name = "area of union convex hull"
     ds["area_km2"].units = "km^2"
@@ -411,13 +459,14 @@ def create_output_nc(
 def build_excd_output_slice(
     k: int,
     mag_nc: str,
+    var_name: str,
     ti_nc: int,
     ny: int,
     nx: int,
     idx_u: np.ndarray,
 ) -> tuple[int, np.ndarray]:
     with netCDF4.Dataset(mag_nc) as src:
-        excd = masked_to_nan(src["HI_EXCDMAG"][:, :, ti_nc]).astype(np.float32)
+        excd = masked_to_nan(src[var_name][:, :, ti_nc]).astype(np.float32)
     if len(idx_u):
         keep = restore_mask_from_indices((ny, nx), idx_u)
         excd[~keep] = np.nan
@@ -429,17 +478,22 @@ def build_excd_output_slice(
 def main() -> None:
     args = parse_args()
     pct = args.pct
-    mag_nc = Path(args.mag_nc or f"HI_EXCDMAG_daily_1981_2025_{pct}.nc")
-    out_nc = Path(args.out_nc or f"HI_EXCD_MJJAS_HWdays_{pct}.nc")
-    det_ckpt = Path(args.det_ckpt or f"HI_EXCD_det_ckpt_{pct}.pkl")
-    write_ckpt = Path(args.write_ckpt or f"HI_EXCD_write_ckpt_{pct}.pkl")
+    cfg = measure_config(args)
+    mag_var = cfg["mag_var"]
+    index_name = cfg["index_name"]
+    source_label = cfg["source_label"]
+    mag_nc = Path(cfg["mag_nc"])
+    out_nc = Path(cfg["out_nc"])
+    det_ckpt = Path(cfg["det_ckpt"])
+    write_ckpt = Path(cfg["write_ckpt"])
     pix_area_km2 = args.pixel_size_km**2
     min_pixels = int(np.ceil(args.min_area_km2 / pix_area_km2))
 
     y, x = read_grid_vectors(mag_nc)
-    _, dates, idx_all, shape = read_mag_time(mag_nc)
+    _, dates, idx_all, shape = read_mag_time(mag_nc, mag_var)
     ny, nx = shape[0], shape[1]
     n_t = len(idx_all)
+    print(f"Detecting {index_name} from {mag_var} in {mag_nc}")
     print(f"Total MJJAS daily slices in MAG file: {n_t}")
 
     det = None
@@ -447,7 +501,7 @@ def main() -> None:
         print(f"Found detection checkpoint {det_ckpt}; checking compatibility.")
         with det_ckpt.open("rb") as f:
             candidate = pickle.load(f)
-        if detection_checkpoint_matches(candidate, idx_all, args.min_duration, args.grace_days):
+        if detection_checkpoint_matches(candidate, idx_all, args.min_duration, args.grace_days, mag_var, index_name):
             print("Detection checkpoint matches min-duration/grace-days; skipping detection.")
             det = candidate
         else:
@@ -469,14 +523,14 @@ def main() -> None:
         jobs = []
         if args.workers <= 1:
             for i, ti_nc in enumerate(idx_all):
-                res = process_one_day(str(mag_nc), int(ti_nc), ny, nx, y, x, pix_area_km2, min_pixels, region_area, args.cluster_cutoff_km)
+                res = process_one_day(str(mag_nc), mag_var, int(ti_nc), ny, nx, y, x, pix_area_km2, min_pixels, region_area, args.cluster_cutoff_km)
                 jobs.append((i, res))
                 if i == 0 or (i + 1) % 250 == 0 or i + 1 == n_t:
                     print(f"  {i + 1:5d}/{n_t:5d} {dates[i]:%Y-%m-%d} HW={int(res.is_hw)} HSCI={res.ahsci}")
         else:
             with ProcessPoolExecutor(max_workers=args.workers) as ex:
                 futs = {
-                    ex.submit(process_one_day, str(mag_nc), int(ti_nc), ny, nx, y, x, pix_area_km2, min_pixels, region_area, args.cluster_cutoff_km): i
+                    ex.submit(process_one_day, str(mag_nc), mag_var, int(ti_nc), ny, nx, y, x, pix_area_km2, min_pixels, region_area, args.cluster_cutoff_km): i
                     for i, ti_nc in enumerate(idx_all)
                 }
                 for done, fut in enumerate(as_completed(futs), 1):
@@ -540,13 +594,15 @@ def main() -> None:
             "months": np.array([d.month for d in dates], dtype=np.int16),
             "min_duration": int(args.min_duration),
             "grace_days": int(args.grace_days),
+            "mag_var": mag_var,
+            "index_name": index_name,
         }
         with det_ckpt.open("wb") as f:
             pickle.dump(det, f, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Saved detection checkpoint {det_ckpt}")
 
-        clusters_df.to_csv(f"HW_events_clusters_{pct}.csv", index=False)
-        events_df.to_csv(f"HW_events_summary_{pct}.csv", index=False)
+        clusters_df.to_csv(f"{cfg['file_prefix']}_HW_events_clusters.csv", index=False)
+        events_df.to_csv(f"{cfg['file_prefix']}_HW_events_summary.csv", index=False)
 
     hw_idx = det["hw_idx"]
     idx_all = det["idx_all"]
@@ -563,6 +619,8 @@ def main() -> None:
             and np.array_equal(w.get("HW_Time"), hw_time)
             and int(w.get("min_duration", -1)) == int(args.min_duration)
             and int(w.get("grace_days", -1)) == int(args.grace_days)
+            and w.get("mag_var") == mag_var
+            and w.get("index_name") == index_name
         )
         if write_ckpt_matches:
             fresh = False
@@ -584,7 +642,21 @@ def main() -> None:
             "mean_pair_km": det["mean_pair_km"],
             "d_mean_pair_km": det["d_mean_pair_km"],
         }
-        out = create_output_nc(out_nc, ny, nx, n_hw, x, y, pct, arrays, args.min_duration, args.grace_days)
+        out = create_output_nc(
+            out_nc,
+            ny,
+            nx,
+            n_hw,
+            x,
+            y,
+            pct,
+            arrays,
+            args.min_duration,
+            args.grace_days,
+            mag_var,
+            index_name,
+            source_label,
+        )
         out.close()
         with write_ckpt.open("wb") as f:
             pickle.dump(
@@ -594,6 +666,8 @@ def main() -> None:
                     "HW_Time": hw_time,
                     "min_duration": int(args.min_duration),
                     "grace_days": int(args.grace_days),
+                    "mag_var": mag_var,
+                    "index_name": index_name,
                 },
                 f,
             )
@@ -611,6 +685,7 @@ def main() -> None:
                         build_excd_output_slice(
                             k,
                             str(mag_nc),
+                            mag_var,
                             int(idx_all[int(hw_idx[k])]),
                             ny,
                             nx,
@@ -624,6 +699,7 @@ def main() -> None:
                             build_excd_output_slice,
                             k,
                             str(mag_nc),
+                            mag_var,
                             int(idx_all[int(hw_idx[k])]),
                             ny,
                             nx,
@@ -644,6 +720,8 @@ def main() -> None:
                                     "HW_Time": hw_time,
                                     "min_duration": int(args.min_duration),
                                     "grace_days": int(args.grace_days),
+                                    "mag_var": mag_var,
+                                    "index_name": index_name,
                                 },
                                 f,
                             )

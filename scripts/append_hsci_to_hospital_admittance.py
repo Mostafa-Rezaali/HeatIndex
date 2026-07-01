@@ -15,7 +15,7 @@ from heatindex.utils import ZipGridMask, haversine_km, masked_to_nan, yyyymmdd_t
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Append HSCI and ZIP exposure metrics to hospital-admission CSV.")
-    p.add_argument("--hw-nc-t", default="EXCD_MJJAS_HWdays.nc")
+    p.add_argument("--hw-nc-t", default="EXCD_MJJAS_HWdays_90.nc")
     p.add_argument("--hw-nc-hi", default="HI_EXCD_MJJAS_HWdays_90.nc")
     p.add_argument("--mag-nc-hi", default="HI_EXCDMAG_daily_1981_2025_90.nc")
     p.add_argument("--hi-pcts", default="90,95")

@@ -5,14 +5,15 @@ workflow:
 
 1. Download PRISM daily data, compute heat index, monthly climatological
    thresholds, and daily exceedance-magnitude NetCDF files.
-2. Detect HI heat-wave days and write the HSCI/EXCD NetCDF product.
+2. Detect T-based HSCI and HI-based HSCI-H heat-wave days and write the
+   HSCI/EXCD NetCDF products.
 3. Append HSCI and ZIP-level exposure metrics to the hospital-admission CSV.
 
 The numerical formulas and decision rules were translated directly from the
-MATLAB scripts. The Python HSCI-H detector uses a default minimum duration of
-3 valid HSCI-H days after the spatial/min-area heatwave rules and allows a
-1-day post-rule non-HSCI grace gap to bridge an event; pass `--min-duration`
-or `--grace-days` to override those values.
+MATLAB scripts. The Python detector uses a default minimum duration of 3 valid
+HSCI/HSCI-H days after the spatial/min-area heatwave rules and allows a 1-day
+post-rule grace gap to bridge an event; pass `--min-duration` or
+`--grace-days` to override those values.
 
 ## Setup
 
@@ -45,22 +46,22 @@ deletes each day's downloaded PRISM zip files and extracted rasters after that
 day is processed, and removes the Python cache after successful NetCDF output
 creation unless `--keep-python-cache` is set.
 
-Detect HI heat-wave days and HSCI:
+Detect T-based HSCI and HI-based HSCI-H:
 
 ```powershell
-python scripts/detect_hi_heatwave_days.py --pct 90
+python scripts/detect_hi_heatwave_days.py --measure t --pct 90
+python scripts/detect_hi_heatwave_days.py --measure hi --pct 90
 ```
 
-The default HSCI-H heatwave persistence rule is `--min-duration 3
---grace-days 1`. The grace day means a no-HSCI day after spatial/min-area
-heatwave filtering. It can bridge an event, but it is not written as an HSCI
-day.
+The default persistence rule is `--min-duration 3 --grace-days 1`. The grace
+day means a no-HSCI/HSCI-H day after spatial/min-area heatwave filtering. It
+can bridge an event, but it is not written as an HSCI/HSCI-H day.
 
 Plot annual accumulated HSCI, i.e. AHSCI summed by year from the final HSCI
 NetCDF:
 
 ```powershell
-python scripts/plot_monthly_hsci.py --hsci-nc HI_EXCD_MJJAS_HWdays_90.nc --group-by year
+python scripts/plot_monthly_hsci.py --hsci-nc EXCD_MJJAS_HWdays_90.nc --group-by year
 ```
 
 Append exposure metrics to hospital-admission records:

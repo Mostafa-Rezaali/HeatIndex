@@ -74,11 +74,21 @@ for PCT in "${PCT_LIST[@]}"; do
     --keep-python-cache
 done
 
-echo "Stage 2/3: detect HI heatwave days"
+echo "Stage 2/3: detect HSCI and HSCI-H heatwave days"
 for PCT in "${PCT_LIST[@]}"; do
   PCT="${PCT//[[:space:]]/}"
-  echo "  Detecting percentile P${PCT}"
+  echo "  Detecting HSCI percentile P${PCT}"
   "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+    --measure t \
+    --pct "$PCT" \
+    --area-mat "$AREA_MAT" \
+    --min-duration "$MIN_DURATION" \
+    --grace-days "$GRACE_DAYS" \
+    --workers "$DETECT_WORKERS" \
+    --write-workers "$DETECT_WRITE_WORKERS"
+  echo "  Detecting HSCI-H percentile P${PCT}"
+  "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+    --measure hi \
     --pct "$PCT" \
     --area-mat "$AREA_MAT" \
     --min-duration "$MIN_DURATION" \

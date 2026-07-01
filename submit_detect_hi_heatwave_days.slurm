@@ -15,6 +15,7 @@ set -euo pipefail
 CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
+MEASURE=${MEASURE:-hi}
 PCT=${PCT:-90}
 DETECT_WORKERS=${DETECT_WORKERS:-64}
 DETECT_WRITE_WORKERS=${DETECT_WRITE_WORKERS:-64}
@@ -40,6 +41,7 @@ export PYTHONPATH="$CODE_DIR"
 
 cd "$DATA_DIR"
 "$PY" -u "$CODE_DIR/scripts/detect_hi_heatwave_days.py" \
+  --measure "$MEASURE" \
   --pct "$PCT" \
   --area-mat "$AREA_MAT" \
   --min-duration "$MIN_DURATION" \
@@ -47,4 +49,4 @@ cd "$DATA_DIR"
   --workers "$DETECT_WORKERS" \
   --write-workers "$DETECT_WRITE_WORKERS"
 
-echo "HEATINDEX HI HEATWAVE DAY DETECTION COMPLETE"
+echo "HEATINDEX ${MEASURE} HEATWAVE DAY DETECTION COMPLETE"
