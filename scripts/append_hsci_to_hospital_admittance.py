@@ -129,18 +129,47 @@ def normalize_zip_series(series: pd.Series) -> pd.Series:
     return vals.str.zfill(5)
 
 
+def grid_signature(lat_grid, lon_grid):
+    lat = np.asarray(lat_grid, dtype=np.float64)
+    lon = np.asarray(lon_grid, dtype=np.float64)
+    return {
+        "nlat": int(lat.size),
+        "nlon": int(lon.size),
+        "lat0": float(lat[0]) if lat.size else np.nan,
+        "lat1": float(lat[-1]) if lat.size else np.nan,
+        "lon0": float(lon[0]) if lon.size else np.nan,
+        "lon1": float(lon[-1]) if lon.size else np.nan,
+    }
+
+
+def same_grid_signature(a, b):
+    if not a or not b:
+        return False
+    if a.get("nlat") != b.get("nlat") or a.get("nlon") != b.get("nlon"):
+        return False
+    for key in ("lat0", "lat1", "lon0", "lon1"):
+        if not np.isclose(float(a.get(key, np.nan)), float(b.get(key, np.nan)), equal_nan=True):
+            return False
+    return True
+
+
 def build_zip_masks(args, needed_zips, lat_grid, lon_grid):
     import pickle
 
+    sig = grid_signature(lat_grid, lon_grid)
     cache = Path(args.mask_cache)
     if args.mask_cache and cache.exists():
         with cache.open("rb") as f:
             payload = pickle.load(f)
         cached_zips = set(payload.get("cached_zips", []))
-        if cached_zips.issuperset(set(needed_zips)) and payload.get("cached_zip_buffer_cells") == args.zip_buffer_cells:
+        if (
+            cached_zips.issuperset(set(needed_zips))
+            and payload.get("cached_zip_buffer_cells") == args.zip_buffer_cells
+            and same_grid_signature(payload.get("grid_signature"), sig)
+        ):
             print(f"Loading cached ZIP masks from {cache}")
             return payload["zcta_masks"]
-        print("Cached ZIP masks missing requested ZIPs or using different neighborhood size; rebuilding.")
+        print("Cached ZIP masks missing requested ZIPs, using a different neighborhood size, or built on a different grid; rebuilding.")
 
     print(f"Loading ZIP centroid CSV: {args.zip_csv}")
     z = pd.read_csv(args.zip_csv)
@@ -184,7 +213,15 @@ def build_zip_masks(args, needed_zips, lat_grid, lon_grid):
 
     if args.mask_cache:
         with cache.open("wb") as f:
-            pickle.dump({"zcta_masks": masks, "cached_zips": list(needed_zips), "cached_zip_buffer_cells": args.zip_buffer_cells}, f)
+            pickle.dump(
+                {
+                    "zcta_masks": masks,
+                    "cached_zips": list(needed_zips),
+                    "cached_zip_buffer_cells": args.zip_buffer_cells,
+                    "grid_signature": sig,
+                },
+                f,
+            )
         print(f"Saved ZIP masks to {cache}")
     return masks
 
@@ -199,15 +236,23 @@ def read_zip_avg(nc_file, var_name, date_index, zm: ZipGridMask, target_date, ze
     if ti is None:
         return 0.0 if zero_if_date_missing else np.nan
     with netCDF4.Dataset(nc_file) as ds:
+        var = ds[var_name]
+        if ti >= var.shape[2]:
+            return 0.0 if zero_if_date_missing else np.nan
+        if zm.r_start >= var.shape[0] or zm.c_start >= var.shape[1]:
+            return np.nan
+        r_stop = min(zm.r_start + zm.r_count, var.shape[0])
+        c_stop = min(zm.c_start + zm.c_count, var.shape[1])
         slab = masked_to_nan(
-            ds[var_name][
-                zm.r_start : zm.r_start + zm.r_count,
-                zm.c_start : zm.c_start + zm.c_count,
+            var[
+                zm.r_start : r_stop,
+                zm.c_start : c_stop,
                 ti,
             ]
         )
     slab = np.asarray(slab, dtype=np.float64)
-    slab[~zm.mask] = np.nan
+    mask = zm.mask[: slab.shape[0], : slab.shape[1]]
+    slab[~mask] = np.nan
     good = np.isfinite(slab)
     if not np.any(good):
         return np.nan
@@ -332,7 +377,8 @@ def init_hospital_worker(context):
 def compute_patient_values(i, zc, d0, context=None):
     ctx = _HOSPITAL_CONTEXT if context is None else context
     a = ctx["args"]
-    masks = ctx["masks"]
+    masks_hi = ctx["masks_hi"]
+    masks_t = ctx["masks_t"]
     hi_contexts = ctx["hi_contexts"]
     legacy_hi = ctx["legacy_hi"]
     hsci_t_by_date = ctx["hsci_t_by_date"]
@@ -344,33 +390,40 @@ def compute_patient_values(i, zc, d0, context=None):
     lon_grid = ctx["lon_grid"]
 
     values = {}
-    zm = masks.get("z" + str(zc).strip())
-    if zm is None or pd.isna(d0):
+    zkey = "z" + str(zc).strip()
+    zm_hi = masks_hi.get(zkey)
+    zm_t = masks_t.get(zkey)
+    if (zm_hi is None and zm_t is None) or pd.isna(d0):
         return i, values
     d0 = pd.Timestamp(d0).normalize()
 
     values["HSCI_T_admit"] = hsci_t_by_date.get(d0, np.nan)
     values["HSCI_HI_admit"] = hsci_hi_by_date.get(d0, np.nan)
-    values["zcta_EXCD_T_admit"] = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm, d0, True)
-    values["zcta_EXCD_HI_admit"] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, d0, False)
+    values["zcta_EXCD_T_admit"] = np.nan
+    values["zcta_EXCD_HI_admit"] = np.nan
+    if zm_t is not None:
+        values["zcta_EXCD_T_admit"] = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm_t, d0, True)
+    if zm_hi is not None:
+        values["zcta_EXCD_HI_admit"] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, d0, False)
     values["miss_excd_T_admit"] = float(np.isnan(values["zcta_EXCD_T_admit"]))
     values["miss_excd_HI_admit"] = float(np.isnan(values["zcta_EXCD_HI_admit"]))
 
-    if values["miss_excd_HI_admit"]:
+    if zm_hi is not None and values["miss_excd_HI_admit"]:
         back_days, space_km, excd_val = find_backward_nearest_heatwave_cell(
-            legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm, d0, lat_grid, lon_grid
+            legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm_hi, d0, lat_grid, lon_grid
         )
         values["nearest_hw_back_days_HI_admit_nan"] = back_days
         values["nearest_hw_space_km_HI_admit_nan"] = space_km
         values["nearest_hw_excd_HI_admit_nan"] = excd_val
 
-    for pct, hi_ctx in hi_contexts.items():
-        s = hi_ctx["suffix"]
-        values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
-        values[f"event_duration_HI_admit_anchor_{s}"] = anchored_heat_duration_with_grace(hi_ctx, zm, d0)
-        values[f"days_heatwave_HI_30d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 30)
-        values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 21)
-        values[f"days_heatwave_HI_14d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm, d0, 14)
+    if zm_hi is not None:
+        for pct, hi_ctx in hi_contexts.items():
+            s = hi_ctx["suffix"]
+            values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
+            values[f"event_duration_HI_admit_anchor_{s}"] = anchored_heat_duration_with_grace(hi_ctx, zm_hi, d0)
+            values[f"days_heatwave_HI_30d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 30)
+            values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 21)
+            values[f"days_heatwave_HI_14d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 14)
 
     acc_hsci_t = acc_hsci_hi = 0.0
     acc_excd_t = acc_excd_hi = 0.0
@@ -383,7 +436,7 @@ def compute_patient_values(i, zc, d0, context=None):
 
     for offset in range(-7, 0):
         dd = d0 + pd.Timedelta(days=offset)
-        vt = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm, dd, True)
+        vt = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm_t, dd, True) if zm_t is not None else np.nan
         if not np.isnan(vt):
             acc_excd_t += vt
             if vt > 0:
@@ -407,7 +460,7 @@ def compute_patient_values(i, zc, d0, context=None):
             if offset >= -3:
                 acc_hsci_hi_3 += v
 
-        vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm, dd, False)
+        vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, dd, False) if zm_hi is not None else np.nan
         if not np.isnan(vhi):
             acc_excd_hi += vhi
             if vhi > 0:
@@ -469,13 +522,21 @@ def main() -> None:
 
     hw_time_t, hw_dates_t, hw_hsci_t = read_time_and_hsci(args.hw_nc_t)
     lat_grid, lon_grid = read_lat_lon(legacy_hi["mag_nc"])
+    lat_grid_t, lon_grid_t = read_lat_lon(args.hw_nc_t)
     dates_daily_hi = legacy_hi["dates_daily"]
     print(f"Daily HI file P{legacy_pct}: {len(dates_daily_hi)} MJJAS days")
     print(f"HW days T     : {len(hw_time_t)} days")
     for pct, ctx in hi_contexts.items():
         print(f"HW days HI P{pct}: {len(ctx['hw_dates'])} days")
 
-    masks = build_zip_masks(args, needed_zips, lat_grid, lon_grid)
+    print("Building ZIP masks for HI grid...")
+    masks_hi = build_zip_masks(args, needed_zips, lat_grid, lon_grid)
+    if lat_grid.shape == lat_grid_t.shape and lon_grid.shape == lon_grid_t.shape and np.allclose(lat_grid, lat_grid_t) and np.allclose(lon_grid, lon_grid_t):
+        print("T grid matches HI grid; reusing HI ZIP masks for T.")
+        masks_t = masks_hi
+    else:
+        print("Building ZIP masks for T grid...")
+        masks_t = build_zip_masks(args, needed_zips, lat_grid_t, lon_grid_t)
     idx_daily_hi = legacy_hi["idx_daily"]
     idx_hw_t = make_date_index(hw_dates_t)
 
@@ -521,7 +582,8 @@ def main() -> None:
         "args": {
             "hw_nc_t": args.hw_nc_t,
         },
-        "masks": masks,
+        "masks_hi": masks_hi,
+        "masks_t": masks_t,
         "hi_contexts": hi_contexts,
         "legacy_hi": legacy_hi,
         "hsci_t_by_date": hsci_t_by_date,
