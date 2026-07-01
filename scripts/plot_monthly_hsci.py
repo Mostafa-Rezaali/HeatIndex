@@ -70,8 +70,10 @@ def plot_ahsci(summary: pd.DataFrame, out_png: Path, title: str, group_by: str) 
     fig, ax = plt.subplots(figsize=(12, 5.5), constrained_layout=True)
 
     if group_by == "year":
-        ax.bar(summary["year"].astype(str), summary["AHSCI"], color="#1f5a8a", width=0.78)
+        ax.plot(summary["year"], summary["AHSCI"], color="#1f5a8a", linewidth=1.8)
+        ax.scatter(summary["year"], summary["AHSCI"], color="#1f5a8a", s=20, zorder=3)
         ax.set_xlabel("Year")
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
     elif group_by == "month":
         ax.plot(summary["month"], summary["AHSCI"], color="#1f5a8a", linewidth=1.8)
         ax.scatter(summary["month"], summary["AHSCI"], color="#1f5a8a", s=14, zorder=3)
