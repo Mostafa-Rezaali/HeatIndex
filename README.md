@@ -10,8 +10,9 @@ workflow:
 
 The numerical formulas and decision rules were translated directly from the
 MATLAB scripts. The Python HSCI-H detector uses a default minimum duration of
-3 positive-HSCI days and allows a 1-day non-HSCI grace gap to bridge an event;
-pass `--min-duration` or `--grace-days` to override those values.
+3 valid HSCI-H days after the spatial/min-area heatwave rules and allows a
+1-day post-rule non-HSCI grace gap to bridge an event; pass `--min-duration`
+or `--grace-days` to override those values.
 
 ## Setup
 
@@ -51,8 +52,16 @@ python scripts/detect_hi_heatwave_days.py --pct 90
 ```
 
 The default HSCI-H heatwave persistence rule is `--min-duration 3
---grace-days 1`. The grace day can bridge an event, but it is not written as an
-HSCI day.
+--grace-days 1`. The grace day means a no-HSCI day after spatial/min-area
+heatwave filtering. It can bridge an event, but it is not written as an HSCI
+day.
+
+Plot annual accumulated HSCI, i.e. AHSCI summed by year from the final HSCI
+NetCDF:
+
+```powershell
+python scripts/plot_monthly_hsci.py --hsci-nc HI_EXCD_MJJAS_HWdays_90.nc --group-by year
+```
 
 Append exposure metrics to hospital-admission records:
 

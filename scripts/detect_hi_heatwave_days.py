@@ -227,6 +227,8 @@ def detect_heatwaves_by_year(
                     j += 1
                     continue
 
+                # Grace is based on post-rule HSCI-H days: this gap is allowed
+                # only between two days that passed the spatial/min-area rules.
                 if gap_count < grace_days and j + 1 < idx.size and is_hw[idx[j + 1]]:
                     gap_count += 1
                     j += 1
@@ -352,9 +354,10 @@ def create_output_nc(
     ds.min_duration_days = int(min_duration)
     ds.grace_days = int(grace_days)
     ds.heatwave_rule = (
-        "At least min_duration_days positive-HSCI days, allowing up to "
-        "grace_days consecutive non-HSCI days to bridge an event; grace days "
-        "are not written as HSCI days."
+        "At least min_duration_days valid HSCI-H days after spatial/min-area "
+        "heatwave rules, allowing up to grace_days consecutive post-rule "
+        "non-HSCI days to bridge an event; grace days are not written as HSCI "
+        "days."
     )
     ds.createDimension("y", ny)
     ds.createDimension("x", nx)
