@@ -13,6 +13,9 @@ import pandas as pd
 from heatindex.utils import ZipGridMask, haversine_km, masked_to_nan, yyyymmdd_to_datetime
 
 
+PRIOR_WINDOWS = (1, 2, 3, 4, 5, 6, 7)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Append HSCI and ZIP exposure metrics to hospital-admission CSV.")
     p.add_argument("--hw-nc-t", default="EXCD_MJJAS_HWdays_90.nc")
@@ -482,69 +485,62 @@ def compute_patient_values(i, zc, d0, context=None):
             values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 21)
             values[f"days_heatwave_HI_14d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 14)
 
-    acc_hsci_t = acc_hsci_hi = 0.0
+    hsci_t_prior = {days: 0.0 for days in PRIOR_WINDOWS}
+    hsci_hi_prior = {days: 0.0 for days in PRIOR_WINDOWS}
+    days_excd_t_prior = {days: 0 for days in PRIOR_WINDOWS}
+    days_excd_hi_prior = {days: 0 for days in PRIOR_WINDOWS}
+    max_excd_t_prior = {days: np.nan for days in PRIOR_WINDOWS}
+    max_excd_hi_prior = {days: np.nan for days in PRIOR_WINDOWS}
     acc_excd_t = acc_excd_hi = 0.0
-    acc_hsci_t_3 = acc_hsci_hi_3 = 0.0
     acc_excd_t_3 = acc_excd_hi_3 = 0.0
-    cnt_excd_t_7 = cnt_excd_hi_7 = 0
-    cnt_excd_t_3 = cnt_excd_hi_3 = 0
-    mx_excd_t_7 = mx_excd_hi_7 = np.nan
-    mx_excd_t_3 = mx_excd_hi_3 = np.nan
 
-    for offset in range(-7, 0):
+    for offset in range(-max(PRIOR_WINDOWS), 0):
         dd = d0 + pd.Timedelta(days=offset)
+        active_windows = [days for days in PRIOR_WINDOWS if offset >= -days]
         vt = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm_t, dd, True) if zm_t is not None else np.nan
         if not np.isnan(vt):
             acc_excd_t += vt
-            if vt > 0:
-                cnt_excd_t_7 += 1
-                mx_excd_t_7 = vt if np.isnan(mx_excd_t_7) else max(mx_excd_t_7, vt)
             if offset >= -3:
                 acc_excd_t_3 += vt
-                if vt > 0:
-                    cnt_excd_t_3 += 1
-                    mx_excd_t_3 = vt if np.isnan(mx_excd_t_3) else max(mx_excd_t_3, vt)
+            if vt > 0:
+                for days in active_windows:
+                    days_excd_t_prior[days] += 1
+                    current_max = max_excd_t_prior[days]
+                    max_excd_t_prior[days] = vt if np.isnan(current_max) else max(current_max, vt)
 
         v = hsci_t_by_date.get(dd)
         if v is not None and np.isfinite(v):
-            acc_hsci_t += v
-            if offset >= -3:
-                acc_hsci_t_3 += v
+            for days in active_windows:
+                hsci_t_prior[days] += v
 
         v = hsci_hi_by_date.get(dd)
         if v is not None and np.isfinite(v):
-            acc_hsci_hi += v
-            if offset >= -3:
-                acc_hsci_hi_3 += v
+            for days in active_windows:
+                hsci_hi_prior[days] += v
 
         vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, dd, False) if zm_hi is not None else np.nan
         if not np.isnan(vhi):
             acc_excd_hi += vhi
-            if vhi > 0:
-                cnt_excd_hi_7 += 1
-                mx_excd_hi_7 = vhi if np.isnan(mx_excd_hi_7) else max(mx_excd_hi_7, vhi)
             if offset >= -3:
                 acc_excd_hi_3 += vhi
-                if vhi > 0:
-                    cnt_excd_hi_3 += 1
-                    mx_excd_hi_3 = vhi if np.isnan(mx_excd_hi_3) else max(mx_excd_hi_3, vhi)
+            if vhi > 0:
+                for days in active_windows:
+                    days_excd_hi_prior[days] += 1
+                    current_max = max_excd_hi_prior[days]
+                    max_excd_hi_prior[days] = vhi if np.isnan(current_max) else max(current_max, vhi)
 
-    values["HSCI_T_3d_prior"] = acc_hsci_t_3
-    values["HSCI_HI_3d_prior"] = acc_hsci_hi_3
+    for days in PRIOR_WINDOWS:
+        values[f"HSCI_T_{days}d_prior"] = hsci_t_prior[days]
+        values[f"HSCI_HI_{days}d_prior"] = hsci_hi_prior[days]
+        values[f"days_excd_T_{days}d_prior"] = days_excd_t_prior[days]
+        values[f"days_excd_HI_{days}d_prior"] = days_excd_hi_prior[days]
+        values[f"max_excd_T_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_t_prior[days])
+        values[f"max_excd_HI_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_hi_prior[days])
+
     values["zcta_EXCD_T_3d_prior"] = acc_excd_t_3
     values["zcta_EXCD_HI_3d_prior"] = acc_excd_hi_3
-    values["HSCI_T_7d_prior"] = acc_hsci_t
-    values["HSCI_HI_7d_prior"] = acc_hsci_hi
     values["zcta_EXCD_T_7d_prior"] = acc_excd_t
     values["zcta_EXCD_HI_7d_prior"] = acc_excd_hi
-    values["days_excd_T_3d_prior"] = cnt_excd_t_3
-    values["days_excd_HI_3d_prior"] = cnt_excd_hi_3
-    values["days_excd_T_7d_prior"] = cnt_excd_t_7
-    values["days_excd_HI_7d_prior"] = cnt_excd_hi_7
-    values["max_excd_T_3d_prior"] = coerce_nan_max_to_zero(mx_excd_t_3)
-    values["max_excd_HI_3d_prior"] = coerce_nan_max_to_zero(mx_excd_hi_3)
-    values["max_excd_T_7d_prior"] = coerce_nan_max_to_zero(mx_excd_t_7)
-    values["max_excd_HI_7d_prior"] = coerce_nan_max_to_zero(mx_excd_hi_7)
     return i, values
 
 
@@ -605,28 +601,23 @@ def main() -> None:
         "HSCI_HI_admit": np.full(n_p, np.nan),
         "zcta_EXCD_T_admit": np.full(n_p, np.nan),
         "zcta_EXCD_HI_admit": np.full(n_p, np.nan),
-        "HSCI_T_3d_prior": np.full(n_p, np.nan),
-        "HSCI_HI_3d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_T_3d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_HI_3d_prior": np.full(n_p, np.nan),
-        "HSCI_T_7d_prior": np.full(n_p, np.nan),
-        "HSCI_HI_7d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_T_7d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_HI_7d_prior": np.full(n_p, np.nan),
-        "days_excd_T_3d_prior": np.zeros(n_p),
-        "days_excd_HI_3d_prior": np.zeros(n_p),
-        "days_excd_T_7d_prior": np.zeros(n_p),
-        "days_excd_HI_7d_prior": np.zeros(n_p),
-        "max_excd_T_3d_prior": np.full(n_p, np.nan),
-        "max_excd_HI_3d_prior": np.full(n_p, np.nan),
-        "max_excd_T_7d_prior": np.full(n_p, np.nan),
-        "max_excd_HI_7d_prior": np.full(n_p, np.nan),
         "miss_excd_T_admit": np.zeros(n_p),
         "miss_excd_HI_admit": np.zeros(n_p),
         "nearest_hw_back_days_HI_admit_nan": np.full(n_p, np.nan),
         "nearest_hw_space_km_HI_admit_nan": np.full(n_p, np.nan),
         "nearest_hw_excd_HI_admit_nan": np.full(n_p, np.nan),
     }
+    for days in PRIOR_WINDOWS:
+        cols[f"HSCI_T_{days}d_prior"] = np.full(n_p, np.nan)
+        cols[f"HSCI_HI_{days}d_prior"] = np.full(n_p, np.nan)
+        cols[f"days_excd_T_{days}d_prior"] = np.zeros(n_p)
+        cols[f"days_excd_HI_{days}d_prior"] = np.zeros(n_p)
+        cols[f"max_excd_T_{days}d_prior"] = np.full(n_p, np.nan)
+        cols[f"max_excd_HI_{days}d_prior"] = np.full(n_p, np.nan)
     for pct, ctx in hi_contexts.items():
         s = ctx["suffix"]
         cols[f"HSCI_HI_30d_prior_{s}"] = np.full(n_p, np.nan)

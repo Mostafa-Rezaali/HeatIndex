@@ -79,6 +79,17 @@ The hospital output includes percentile-specific HI additions for each value in
 - `days_heatwave_HI_21d_prior_p90`, `days_heatwave_HI_21d_prior_p95`
 - `days_heatwave_HI_14d_prior_p90`, `days_heatwave_HI_14d_prior_p95`
 
+For both T-based HSCI and HI-based HSCI-H, the output also includes cumulative
+HSCI, number of ZIP exceedance days, and maximum ZIP exceedance over the 1-,
+2-, 3-, 4-, 5-, 6-, and 7-day windows immediately before admission:
+
+- `HSCI_T_{N}d_prior`, `HSCI_HI_{N}d_prior`
+- `days_excd_T_{N}d_prior`, `days_excd_HI_{N}d_prior`
+- `max_excd_T_{N}d_prior`, `max_excd_HI_{N}d_prior`
+
+Here, `{N}` is one of `1,2,3,4,5,6,7`. These windows exclude the admission
+day; for example, `1d_prior` uses only the calendar day before admission.
+
 The anchored event duration counts ZIP-level HI exceedance days in the run
 ending on the admit day, scanning backward up to 30 days and allowing one
 non-exceedance grace day without counting the grace day as a heat day.
