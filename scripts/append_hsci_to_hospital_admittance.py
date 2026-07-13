@@ -70,6 +70,16 @@ def matlab_weekday(ts: pd.Timestamp) -> float:
     return ((int(ts.weekday()) + 1) % 7) + 1
 
 
+def derive_length_of_stay(admit_dates: pd.Series, discharge_dates: pd.Series):
+    raw_los = (discharge_dates - admit_dates).dt.days.astype(float)
+    invalid = raw_los < 0
+    los = raw_los.mask(invalid | admit_dates.isna() | discharge_dates.isna())
+    long_stay = pd.Series(np.nan, index=los.index, dtype=float)
+    valid = los.notna()
+    long_stay.loc[valid] = (los.loc[valid] >= 3).astype(float)
+    return los, long_stay, invalid.astype(float)
+
+
 def read_time_and_hsci(path: str | Path):
     with netCDF4.Dataset(path) as ds:
         t = np.asarray(ds["time"][:], dtype=np.float64)
@@ -453,7 +463,7 @@ def compute_patient_values(i, zc, d0, context=None):
     zkey = "z" + str(zc).strip()
     zm_hi = masks_hi.get(zkey)
     zm_t = masks_t.get(zkey)
-    if (zm_hi is None and zm_t is None) or pd.isna(d0):
+    if pd.isna(d0):
         return i, values
     d0 = pd.Timestamp(d0).normalize()
 
@@ -476,10 +486,10 @@ def compute_patient_values(i, zc, d0, context=None):
         values["nearest_hw_space_km_HI_admit_nan"] = space_km
         values["nearest_hw_excd_HI_admit_nan"] = excd_val
 
-    if zm_hi is not None:
-        for pct, hi_ctx in hi_contexts.items():
-            s = hi_ctx["suffix"]
-            values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
+    for pct, hi_ctx in hi_contexts.items():
+        s = hi_ctx["suffix"]
+        values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
+        if zm_hi is not None:
             values[f"event_duration_HI_admit_anchor_{s}"] = anchored_heat_duration_with_grace(hi_ctx, zm_hi, d0)
             values[f"days_heatwave_HI_30d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 30)
             values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 21)
@@ -532,15 +542,19 @@ def compute_patient_values(i, zc, d0, context=None):
     for days in PRIOR_WINDOWS:
         values[f"HSCI_T_{days}d_prior"] = hsci_t_prior[days]
         values[f"HSCI_HI_{days}d_prior"] = hsci_hi_prior[days]
-        values[f"days_excd_T_{days}d_prior"] = days_excd_t_prior[days]
-        values[f"days_excd_HI_{days}d_prior"] = days_excd_hi_prior[days]
-        values[f"max_excd_T_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_t_prior[days])
-        values[f"max_excd_HI_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_hi_prior[days])
+        if zm_t is not None:
+            values[f"days_excd_T_{days}d_prior"] = days_excd_t_prior[days]
+            values[f"max_excd_T_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_t_prior[days])
+        if zm_hi is not None:
+            values[f"days_excd_HI_{days}d_prior"] = days_excd_hi_prior[days]
+            values[f"max_excd_HI_{days}d_prior"] = coerce_nan_max_to_zero(max_excd_hi_prior[days])
 
-    values["zcta_EXCD_T_3d_prior"] = acc_excd_t_3
-    values["zcta_EXCD_HI_3d_prior"] = acc_excd_hi_3
-    values["zcta_EXCD_T_7d_prior"] = acc_excd_t
-    values["zcta_EXCD_HI_7d_prior"] = acc_excd_hi
+    if zm_t is not None:
+        values["zcta_EXCD_T_3d_prior"] = acc_excd_t_3
+        values["zcta_EXCD_T_7d_prior"] = acc_excd_t
+    if zm_hi is not None:
+        values["zcta_EXCD_HI_3d_prior"] = acc_excd_hi_3
+        values["zcta_EXCD_HI_7d_prior"] = acc_excd_hi
     return i, values
 
 
@@ -556,13 +570,17 @@ def patient_chunks(rows, chunk_size):
 def main() -> None:
     args = parse_args()
 
-    p = pd.read_csv(args.patient_csv, dtype={"zip5": str, "ADMIT_DATE": str, "DISCHARGE_DATE": str})
+    p = pd.read_csv(args.patient_csv, dtype={"zip5": "string", "ADMIT_DATE": "string", "DISCHARGE_DATE": "string"})
+    unnamed_cols = [c for c in p.columns if str(c).strip().lower().startswith("unnamed:")]
+    if unnamed_cols:
+        p = p.drop(columns=unnamed_cols)
+        print(f"Removed export-index columns: {', '.join(map(str, unnamed_cols))}")
     if "zip5" not in p.columns:
         raise KeyError("Patient CSV must contain a zip5 column.")
     n_p = len(p)
     print(f"Loaded {n_p} patient records.")
 
-    p["zip5"] = p["zip5"].astype(str).str.strip()
+    p["zip5"] = p["zip5"].str.strip()
     admit_dt = p["ADMIT_DATE"].map(parse_date_safe) if "ADMIT_DATE" in p.columns else pd.Series(pd.NaT, index=p.index)
     discharge_dt = p["DISCHARGE_DATE"].map(parse_date_safe) if "DISCHARGE_DATE" in p.columns else pd.Series(pd.NaT, index=p.index)
     needed_zips = sorted(p["zip5"].dropna().astype(str).str.strip().unique().tolist())
@@ -605,8 +623,8 @@ def main() -> None:
         "zcta_EXCD_HI_3d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_T_7d_prior": np.full(n_p, np.nan),
         "zcta_EXCD_HI_7d_prior": np.full(n_p, np.nan),
-        "miss_excd_T_admit": np.zeros(n_p),
-        "miss_excd_HI_admit": np.zeros(n_p),
+        "miss_excd_T_admit": np.full(n_p, np.nan),
+        "miss_excd_HI_admit": np.full(n_p, np.nan),
         "nearest_hw_back_days_HI_admit_nan": np.full(n_p, np.nan),
         "nearest_hw_space_km_HI_admit_nan": np.full(n_p, np.nan),
         "nearest_hw_excd_HI_admit_nan": np.full(n_p, np.nan),
@@ -614,17 +632,17 @@ def main() -> None:
     for days in PRIOR_WINDOWS:
         cols[f"HSCI_T_{days}d_prior"] = np.full(n_p, np.nan)
         cols[f"HSCI_HI_{days}d_prior"] = np.full(n_p, np.nan)
-        cols[f"days_excd_T_{days}d_prior"] = np.zeros(n_p)
-        cols[f"days_excd_HI_{days}d_prior"] = np.zeros(n_p)
+        cols[f"days_excd_T_{days}d_prior"] = np.full(n_p, np.nan)
+        cols[f"days_excd_HI_{days}d_prior"] = np.full(n_p, np.nan)
         cols[f"max_excd_T_{days}d_prior"] = np.full(n_p, np.nan)
         cols[f"max_excd_HI_{days}d_prior"] = np.full(n_p, np.nan)
     for pct, ctx in hi_contexts.items():
         s = ctx["suffix"]
         cols[f"HSCI_HI_30d_prior_{s}"] = np.full(n_p, np.nan)
         cols[f"event_duration_HI_admit_anchor_{s}"] = np.full(n_p, np.nan)
-        cols[f"days_heatwave_HI_30d_prior_{s}"] = np.zeros(n_p)
-        cols[f"days_heatwave_HI_21d_prior_{s}"] = np.zeros(n_p)
-        cols[f"days_heatwave_HI_14d_prior_{s}"] = np.zeros(n_p)
+        cols[f"days_heatwave_HI_30d_prior_{s}"] = np.full(n_p, np.nan)
+        cols[f"days_heatwave_HI_21d_prior_{s}"] = np.full(n_p, np.nan)
+        cols[f"days_heatwave_HI_14d_prior_{s}"] = np.full(n_p, np.nan)
 
     worker_context = {
         "args": {
@@ -677,10 +695,10 @@ def main() -> None:
     p["admit_month"] = admit_dt.dt.month
     p["admit_dayofyear"] = admit_dt.dt.dayofyear
     p["admit_weekday"] = admit_dt.map(matlab_weekday)
-    los = (discharge_dt - admit_dt).dt.days.astype(float)
-    los[pd.isna(admit_dt) | pd.isna(discharge_dt)] = np.nan
+    los, long_stay, invalid_los = derive_length_of_stay(admit_dt, discharge_dt)
     p["length_of_stay_days"] = los
-    p["long_stay_3plus"] = (p["length_of_stay_days"] >= 3).astype(float)
+    p["long_stay_3plus"] = long_stay
+    p["invalid_length_of_stay"] = invalid_los
     p["any_heat_T_admit"] = (p["HSCI_T_admit"] > 0).astype(float)
     p["any_heat_HI_admit"] = (p["HSCI_HI_admit"] > 0).astype(float)
     p["any_excd_T_admit"] = (p["zcta_EXCD_T_admit"] > 0).astype(float)

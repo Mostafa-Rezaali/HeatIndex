@@ -89,6 +89,14 @@ HSCI, number of ZIP exceedance days, and maximum ZIP exceedance over the 1-,
 
 Here, `{N}` is one of `1,2,3,4,5,6,7`. These windows exclude the admission
 day; for example, `1d_prior` uses only the calendar day before admission.
+Records without a usable ZIP mask retain date-based HSCI values, while all
+ZIP-dependent counts, maxima, durations, and accumulated exceedance values are
+written as missing instead of zero. Accidental `Unnamed:` CSV index columns are
+removed from the output.
+
+`length_of_stay_days` and `long_stay_3plus` are missing when the discharge date
+is absent or precedes admission. The `invalid_length_of_stay` flag identifies
+the latter source-data condition.
 
 The anchored event duration counts ZIP-level HI exceedance days in the run
 ending on the admit day, scanning backward up to 30 days and allowing one
