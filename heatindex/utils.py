@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 import math
+import pickle
 import re
 import time
 from typing import Callable, Iterable
@@ -12,6 +13,32 @@ import numpy as np
 
 
 MATLAB_NAT = None
+
+
+def atomic_pickle_dump(value, path: str | Path) -> None:
+    """Write a pickle checkpoint atomically so interrupted writes are ignored."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with tmp.open("wb") as f:
+            pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
+            f.flush()
+        tmp.replace(path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def load_pickle_or_none(path: str | Path):
+    """Return a pickle value, or None when the checkpoint is unreadable."""
+    try:
+        with Path(path).open("rb") as f:
+            return pickle.load(f)
+    except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ValueError):
+        return None
 
 
 def sorted_indices_to_runs(indices: np.ndarray) -> np.ndarray:

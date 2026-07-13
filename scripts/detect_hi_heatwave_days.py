@@ -5,7 +5,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import pickle
 
 import netCDF4
 import numpy as np
@@ -16,12 +15,14 @@ from skimage.measure import label, regionprops
 from skimage.morphology import binary_closing, binary_opening, convex_hull_image, disk
 
 from heatindex.utils import (
+    atomic_pickle_dump,
     haversine_km,
     interp_grid_vector,
     load_mat_variable,
     masked_to_nan,
     matlab_round_positive,
     retry,
+    load_pickle_or_none,
     sorted_indices_to_runs,
     sorted_runs_overlap,
     yyyymmdd_to_datetime,
@@ -505,9 +506,11 @@ def main() -> None:
     det = None
     if det_ckpt.exists():
         print(f"Found detection checkpoint {det_ckpt}; checking compatibility.")
-        with det_ckpt.open("rb") as f:
-            candidate = pickle.load(f)
-        if detection_checkpoint_matches(candidate, idx_all, args.min_duration, args.grace_days, mag_var, index_name):
+        candidate = load_pickle_or_none(det_ckpt)
+        if not isinstance(candidate, dict):
+            print(f"Detection checkpoint {det_ckpt} is unreadable; deleting it and rebuilding detection.")
+            det_ckpt.unlink(missing_ok=True)
+        elif detection_checkpoint_matches(candidate, idx_all, args.min_duration, args.grace_days, mag_var, index_name):
             print("Detection checkpoint matches min-duration/grace-days; skipping detection.")
             det = candidate
         else:
@@ -603,8 +606,8 @@ def main() -> None:
             "mag_var": mag_var,
             "index_name": index_name,
         }
-        with det_ckpt.open("wb") as f:
-            pickle.dump(det, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"Saving detection checkpoint {det_ckpt} ...")
+        atomic_pickle_dump(det, det_ckpt)
         print(f"Saved detection checkpoint {det_ckpt}")
 
         clusters_df.to_csv(f"{cfg['file_prefix']}_HW_events_clusters.csv", index=False)
@@ -618,17 +621,18 @@ def main() -> None:
     ti_start = 0
     fresh = True
     if out_nc.exists() and write_ckpt.exists():
-        with write_ckpt.open("rb") as f:
-            w = pickle.load(f)
-        write_ckpt_matches = (
+        w = load_pickle_or_none(write_ckpt)
+        if not isinstance(w, dict):
+            print(f"Write checkpoint {write_ckpt} is unreadable; deleting it and recreating output.")
+            write_ckpt.unlink(missing_ok=True)
+        elif (
             w.get("nHW_keep") == n_hw
             and np.array_equal(w.get("HW_Time"), hw_time)
             and int(w.get("min_duration", -1)) == int(args.min_duration)
             and int(w.get("grace_days", -1)) == int(args.grace_days)
             and w.get("mag_var") == mag_var
             and w.get("index_name") == index_name
-        )
-        if write_ckpt_matches:
+        ):
             fresh = False
             ti_start = int(w.get("last_written", -1)) + 1
             print(f"Resuming EXCD write at slice {ti_start + 1}/{n_hw} (file + checkpoint match).")
@@ -664,19 +668,18 @@ def main() -> None:
             source_label,
         )
         out.close()
-        with write_ckpt.open("wb") as f:
-            pickle.dump(
-                {
-                    "last_written": -1,
-                    "nHW_keep": n_hw,
-                    "HW_Time": hw_time,
-                    "min_duration": int(args.min_duration),
-                    "grace_days": int(args.grace_days),
-                    "mag_var": mag_var,
-                    "index_name": index_name,
-                },
-                f,
-            )
+        atomic_pickle_dump(
+            {
+                "last_written": -1,
+                "nHW_keep": n_hw,
+                "HW_Time": hw_time,
+                "min_duration": int(args.min_duration),
+                "grace_days": int(args.grace_days),
+                "mag_var": mag_var,
+                "index_name": index_name,
+            },
+            write_ckpt,
+        )
 
     write_workers = max(1, int(args.write_workers))
     print(f"Writing EXCD slices {ti_start + 1}..{n_hw} of {n_hw} to {out_nc} ...")
@@ -718,19 +721,18 @@ def main() -> None:
                 for k, excd in sorted(results, key=lambda item: item[0]):
                     retry(lambda k=k, excd=excd: dst["EXCD"].__setitem__((slice(None), slice(None), k), excd), f"EXCD slice {k + 1}")
                     if (k + 1) % 25 == 0 or k == ti_start or k + 1 == n_hw:
-                        with write_ckpt.open("wb") as f:
-                            pickle.dump(
-                                {
-                                    "last_written": k,
-                                    "nHW_keep": n_hw,
-                                    "HW_Time": hw_time,
-                                    "min_duration": int(args.min_duration),
-                                    "grace_days": int(args.grace_days),
-                                    "mag_var": mag_var,
-                                    "index_name": index_name,
-                                },
-                                f,
-                            )
+                        atomic_pickle_dump(
+                            {
+                                "last_written": k,
+                                "nHW_keep": n_hw,
+                                "HW_Time": hw_time,
+                                "min_duration": int(args.min_duration),
+                                "grace_days": int(args.grace_days),
+                                "mag_var": mag_var,
+                                "index_name": index_name,
+                            },
+                            write_ckpt,
+                        )
                         print(f"Wrote {k + 1:5d}/{n_hw:5d} {det['hw_dates'][k]:%Y-%m-%d}")
     finally:
         if executor is not None:

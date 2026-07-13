@@ -2,7 +2,9 @@ import unittest
 from unittest.mock import patch
 import importlib.util
 import sys
+import tempfile
 import types
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,7 +14,13 @@ if importlib.util.find_spec("netCDF4") is None:
     netcdf4_stub.Dataset = None
     sys.modules["netCDF4"] = netcdf4_stub
 
-from heatindex.utils import ZipGridMask, sorted_indices_to_runs, sorted_runs_overlap
+from heatindex.utils import (
+    ZipGridMask,
+    atomic_pickle_dump,
+    load_pickle_or_none,
+    sorted_indices_to_runs,
+    sorted_runs_overlap,
+)
 from scripts import append_hsci_to_hospital_admittance as hospital
 
 
@@ -103,6 +111,24 @@ class ClusterOverlapTests(unittest.TestCase):
                 sorted_indices_to_runs(b),
             )
             self.assertEqual(actual, expected)
+
+
+class CheckpointTests(unittest.TestCase):
+    def test_atomic_checkpoint_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.pkl"
+            expected = {"last_written": 25, "values": np.arange(5)}
+            atomic_pickle_dump(expected, path)
+            actual = load_pickle_or_none(path)
+            self.assertEqual(actual["last_written"], 25)
+            np.testing.assert_array_equal(actual["values"], expected["values"])
+            self.assertFalse(path.with_name(path.name + ".tmp").exists())
+
+    def test_truncated_checkpoint_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "checkpoint.pkl"
+            path.write_bytes(b"\x80\x05\x95")
+            self.assertIsNone(load_pickle_or_none(path))
 
 
 if __name__ == "__main__":
