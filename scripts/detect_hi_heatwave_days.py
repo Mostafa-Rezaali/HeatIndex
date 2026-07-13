@@ -22,6 +22,8 @@ from heatindex.utils import (
     masked_to_nan,
     matlab_round_positive,
     retry,
+    sorted_indices_to_runs,
+    sorted_runs_overlap,
     yyyymmdd_to_datetime,
 )
 
@@ -193,7 +195,7 @@ def process_one_day(
             ch = convex_hull_image(msk)
             convex_hull_mask |= ch
             idx = flat_indices_f(ch)
-            pix_lists.append(idx)
+            pix_lists.append(sorted_indices_to_runs(idx))
             rr, cc0 = np.nonzero(ch)
             r0 = float(np.mean(rr + 1.0))
             c0 = float(np.mean(cc0 + 1.0))
@@ -202,7 +204,7 @@ def process_one_day(
         ch = convex_hull_image(lbl)
         convex_hull_mask = ch
         idx = flat_indices_f(ch)
-        pix_lists = [idx]
+        pix_lists = [sorted_indices_to_runs(idx)]
         rr, cc0 = np.nonzero(ch)
         r0 = float(np.mean(rr + 1.0))
         c0 = float(np.mean(cc0 + 1.0))
@@ -290,14 +292,6 @@ def detection_checkpoint_matches(
     )
 
 
-def sets_overlap(a: np.ndarray, b: np.ndarray) -> bool:
-    if a.size == 0 or b.size == 0:
-        return False
-    if a.size <= b.size:
-        return np.intersect1d(a, b, assume_unique=False).size > 0
-    return np.intersect1d(b, a, assume_unique=False).size > 0
-
-
 def resolve_root(remap: dict[int, int], rid: int) -> int:
     while rid in remap:
         rid = remap[rid]
@@ -307,18 +301,29 @@ def resolve_root(remap: dict[int, int], rid: int) -> int:
 def link_events_and_dynamics(day_idx, dates, day_clusters, day_cents, lat_grid, lon_grid):
     n_hw = len(day_idx)
     event_ids_per_day: list[np.ndarray] = []
+    adjacent_overlaps: list[np.ndarray | None] = [None] * n_hw
     next_id = 1
     remap: dict[int, int] = {}
 
+    print(f"Linking clusters across {n_hw} heat-wave days ...")
     for k in range(n_hw):
         this_clusters = day_clusters[k]
         this_ids = np.zeros(len(this_clusters), dtype=np.uint32)
-        for c, pix_a in enumerate(this_clusters):
+        overlap_by_day = {}
+        for j in range(max(0, k - 3), k):
+            overlap = np.zeros((len(day_clusters[j]), len(this_clusters)), dtype=bool)
+            for p, prev_pix in enumerate(day_clusters[j]):
+                for q, pix_a in enumerate(this_clusters):
+                    overlap[p, q] = sorted_runs_overlap(prev_pix, pix_a)
+            overlap_by_day[j] = overlap
+            if j == k - 1:
+                adjacent_overlaps[k] = overlap
+
+        for c in range(len(this_clusters)):
             pri: list[int] = []
-            for j in range(max(0, k - 3), k):
-                for pc, prev_pix in enumerate(day_clusters[j]):
-                    if sets_overlap(pix_a, prev_pix):
-                        pri.append(int(event_ids_per_day[j][pc]))
+            for j, overlap in overlap_by_day.items():
+                for pc in np.flatnonzero(overlap[:, c]):
+                    pri.append(int(event_ids_per_day[j][pc]))
             pri = sorted({p for p in pri if p != 0})
             if not pri:
                 this_ids[c] = next_id
@@ -334,6 +339,8 @@ def link_events_and_dynamics(day_idx, dates, day_clusters, day_cents, lat_grid, 
             if idc != 0:
                 this_ids[c] = resolve_root(remap, int(idc))
         event_ids_per_day.append(this_ids)
+        if k == 0 or (k + 1) % 250 == 0 or k + 1 == n_hw:
+            print(f"  linked {k + 1}/{n_hw} heat-wave days")
 
     n_clusters = np.zeros(n_hw, dtype=np.uint16)
     n_merges = np.zeros(n_hw, dtype=np.uint16)
@@ -354,16 +361,15 @@ def link_events_and_dynamics(day_idx, dates, day_clusters, day_cents, lat_grid, 
         if k >= 1 and np.isfinite(mean_pair_km[k - 1]) and np.isfinite(mean_pair_km[k]):
             d_mean_pair_km[k] = np.float32(mean_pair_km[k] - mean_pair_km[k - 1])
 
-        if k >= 1 and day_clusters[k - 1] and clusters:
-            overlap = np.zeros((len(day_clusters[k - 1]), len(clusters)), dtype=bool)
-            for p, idx_p in enumerate(day_clusters[k - 1]):
-                for q, idx_q in enumerate(clusters):
-                    overlap[p, q] = sets_overlap(idx_p, idx_q)
+        if k >= 1 and adjacent_overlaps[k] is not None:
+            overlap = adjacent_overlaps[k]
             n_splits[k] = np.uint16(np.sum(np.sum(overlap, axis=1) >= 2))
             n_merges[k] = np.uint16(np.sum(np.sum(overlap, axis=0) >= 2))
 
         for c, eid in enumerate(event_ids_per_day[k], start=1):
             rows.append({"day_idx": int(day_idx[k]), "cluster_idx": c, "event_id": int(eid), "date": dates[day_idx[k]].strftime("%Y-%m-%d")})
+        if k == 0 or (k + 1) % 250 == 0 or k + 1 == n_hw:
+            print(f"  summarized {k + 1}/{n_hw} heat-wave days")
 
     clusters_df = pd.DataFrame(rows, columns=["day_idx", "cluster_idx", "event_id", "date"])
     if not clusters_df.empty:

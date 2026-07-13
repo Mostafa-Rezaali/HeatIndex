@@ -12,7 +12,7 @@ if importlib.util.find_spec("netCDF4") is None:
     netcdf4_stub.Dataset = None
     sys.modules["netCDF4"] = netcdf4_stub
 
-from heatindex.utils import ZipGridMask
+from heatindex.utils import ZipGridMask, sorted_indices_to_runs, sorted_runs_overlap
 from scripts import append_hsci_to_hospital_admittance as hospital
 
 
@@ -72,6 +72,37 @@ class PercentileOutputTests(unittest.TestCase):
         self.assertIn("HSCI_HI_30d_prior", values)
         self.assertFalse(any(key.endswith("_p95") for key in values))
         self.assertEqual(set(files_read), {"T_P95.nc", "HI_P95.nc"})
+
+
+class ClusterOverlapTests(unittest.TestCase):
+    def test_sorted_indices_are_losslessly_compressed(self):
+        indices = np.array([1, 2, 3, 8, 11, 12], dtype=np.uint32)
+        runs = sorted_indices_to_runs(indices)
+        np.testing.assert_array_equal(runs, np.array([[1, 3], [8, 8], [11, 12]], dtype=np.uint32))
+
+    def test_run_overlap_matches_exact_set_intersection(self):
+        self.assertFalse(
+            sorted_runs_overlap(
+                np.array([[1, 10], [20, 30]], dtype=np.uint32),
+                np.array([[11, 19], [31, 40]], dtype=np.uint32),
+            )
+        )
+        self.assertTrue(
+            sorted_runs_overlap(
+                np.array([[1, 10], [20, 30]], dtype=np.uint32),
+                np.array([[10, 19]], dtype=np.uint32),
+            )
+        )
+        rng = np.random.default_rng(20260713)
+        for _ in range(100):
+            a = np.sort(rng.choice(5000, size=500, replace=False)).astype(np.uint32)
+            b = np.sort(rng.choice(5000, size=400, replace=False)).astype(np.uint32)
+            expected = np.intersect1d(a, b, assume_unique=True).size > 0
+            actual = sorted_runs_overlap(
+                sorted_indices_to_runs(a),
+                sorted_indices_to_runs(b),
+            )
+            self.assertEqual(actual, expected)
 
 
 if __name__ == "__main__":

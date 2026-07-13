@@ -14,6 +14,30 @@ import numpy as np
 MATLAB_NAT = None
 
 
+def sorted_indices_to_runs(indices: np.ndarray) -> np.ndarray:
+    """Losslessly compress sorted unique flat indices into inclusive runs."""
+    indices = np.asarray(indices, dtype=np.uint32)
+    if indices.size == 0:
+        return np.empty((0, 2), dtype=np.uint32)
+    breaks = np.flatnonzero(np.diff(indices.astype(np.int64)) != 1)
+    starts = indices[np.concatenate(([0], breaks + 1))]
+    ends = indices[np.concatenate((breaks, [indices.size - 1]))]
+    return np.column_stack((starts, ends)).astype(np.uint32, copy=False)
+
+
+def sorted_runs_overlap(a_runs: np.ndarray, b_runs: np.ndarray) -> bool:
+    """Return exact overlap for sorted, non-overlapping inclusive index runs."""
+    if a_runs.size == 0 or b_runs.size == 0:
+        return False
+    positions = np.searchsorted(b_runs[:, 1], a_runs[:, 0], side="left")
+    valid = positions < b_runs.shape[0]
+    if not np.any(valid):
+        return False
+    a_valid = a_runs[valid]
+    b_valid = b_runs[positions[valid]]
+    return bool(np.any(b_valid[:, 0] <= a_valid[:, 1]))
+
+
 def matlab_datenum_to_datetime(value: float) -> datetime:
     ordinal = int(value)
     frac = float(value) % 1
