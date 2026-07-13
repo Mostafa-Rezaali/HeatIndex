@@ -18,36 +18,38 @@ PRIOR_WINDOWS = (1, 2, 3, 4, 5, 6, 7)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Append HSCI and ZIP exposure metrics to hospital-admission CSV.")
-    p.add_argument("--hw-nc-t", default="EXCD_MJJAS_HWdays_90.nc")
-    p.add_argument("--hw-nc-hi", default="HI_EXCD_MJJAS_HWdays_90.nc")
-    p.add_argument("--mag-nc-hi", default="HI_EXCDMAG_daily_1981_2025_90.nc")
-    p.add_argument("--hi-pcts", default="90,95")
-    p.add_argument("--hi-mag-template", default="HI_EXCDMAG_daily_1981_2025_{pct}.nc")
-    p.add_argument("--hi-hw-template", default="HI_EXCD_MJJAS_HWdays_{pct}.nc")
+    p.add_argument("--pct", type=int, default=90, help="Percentile used by every T and HI exposure input.")
+    p.add_argument("--hw-nc-t", default="", help="Override the percentile-specific T HSCI NetCDF.")
+    p.add_argument("--hw-nc-hi", default="", help="Override the percentile-specific HI HSCI-H NetCDF.")
+    p.add_argument("--mag-nc-hi", default="", help="Override the percentile-specific daily HI magnitude NetCDF.")
     p.add_argument("--patient-csv", default="Hospital_Admittancecsv.csv")
     p.add_argument("--zip-csv", default="USZipsWithLatLon_20231227.csv")
     p.add_argument("--mask-cache", default="")
     p.add_argument("--zip-buffer-cells", type=int, default=1)
-    p.add_argument("--out-csv", default="Hospital_Admittance_with_HSCI.csv")
+    p.add_argument("--out-csv", default="", help="Defaults to Hospital_Admittance_with_HSCI_<pct>.csv.")
     p.add_argument("--out-pickle", default="")
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--chunk-size", type=int, default=100)
     return p.parse_args()
 
 
-def parse_pcts(value: str) -> list[int]:
-    out = []
-    for token in value.split(","):
-        token = token.strip()
-        if token:
-            out.append(int(token))
-    if not out:
-        raise ValueError("--hi-pcts must include at least one percentile")
-    return out
-
-
-def pct_suffix(pct: int) -> str:
-    return f"p{pct}"
+def resolve_percentile_paths(
+    pct: int,
+    hw_nc_t: str = "",
+    hw_nc_hi: str = "",
+    mag_nc_hi: str = "",
+    out_csv: str = "",
+) -> dict[str, str | int]:
+    if not 0 < int(pct) < 100:
+        raise ValueError(f"Percentile must be between 1 and 99, got {pct}.")
+    pct = int(pct)
+    return {
+        "pct": pct,
+        "hw_nc_t": hw_nc_t or f"EXCD_MJJAS_HWdays_{pct}.nc",
+        "hw_nc_hi": hw_nc_hi or f"HI_EXCD_MJJAS_HWdays_{pct}.nc",
+        "mag_nc_hi": mag_nc_hi or f"HI_EXCDMAG_daily_1981_2025_{pct}.nc",
+        "out_csv": out_csv or f"Hospital_Admittance_with_HSCI_{pct}.csv",
+    }
 
 
 def parse_date_safe(value) -> pd.Timestamp:
@@ -88,9 +90,9 @@ def read_time_and_hsci(path: str | Path):
     return t, dates, hsci
 
 
-def load_hi_context(pct: int, args):
-    mag_nc = Path(args.hi_mag_template.format(pct=pct))
-    hw_nc = Path(args.hi_hw_template.format(pct=pct))
+def load_hi_context(pct: int, mag_nc: str | Path, hw_nc: str | Path):
+    mag_nc = Path(mag_nc)
+    hw_nc = Path(hw_nc)
     if not mag_nc.is_file():
         raise FileNotFoundError(f"Missing HI MAG file for P{pct}: {mag_nc}")
     if not hw_nc.is_file():
@@ -102,7 +104,6 @@ def load_hi_context(pct: int, args):
     _, hw_dates, hw_hsci = read_time_and_hsci(hw_nc)
     return {
         "pct": pct,
-        "suffix": pct_suffix(pct),
         "mag_nc": str(mag_nc),
         "hw_nc": str(hw_nc),
         "dates_daily": dates_daily,
@@ -449,8 +450,7 @@ def compute_patient_values(i, zc, d0, context=None):
     a = ctx["args"]
     masks_hi = ctx["masks_hi"]
     masks_t = ctx["masks_t"]
-    hi_contexts = ctx["hi_contexts"]
-    legacy_hi = ctx["legacy_hi"]
+    hi_context = ctx["hi_context"]
     hsci_t_by_date = ctx["hsci_t_by_date"]
     hsci_hi_by_date = ctx["hsci_hi_by_date"]
     idx_hw_t = ctx["idx_hw_t"]
@@ -474,26 +474,24 @@ def compute_patient_values(i, zc, d0, context=None):
     if zm_t is not None:
         values["zcta_EXCD_T_admit"] = read_zip_avg(a["hw_nc_t"], "EXCD", idx_hw_t, zm_t, d0, True)
     if zm_hi is not None:
-        values["zcta_EXCD_HI_admit"] = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, d0, False)
+        values["zcta_EXCD_HI_admit"] = read_zip_avg(hi_context["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, d0, False)
     values["miss_excd_T_admit"] = float(np.isnan(values["zcta_EXCD_T_admit"]))
     values["miss_excd_HI_admit"] = float(np.isnan(values["zcta_EXCD_HI_admit"]))
 
     if zm_hi is not None and values["miss_excd_HI_admit"]:
         back_days, space_km, excd_val = find_backward_nearest_heatwave_cell(
-            legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm_hi, d0, lat_grid, lon_grid
+            hi_context["mag_nc"], "HI_EXCDMAG", idx_daily_hi, dates_daily_hi, zm_hi, d0, lat_grid, lon_grid
         )
         values["nearest_hw_back_days_HI_admit_nan"] = back_days
         values["nearest_hw_space_km_HI_admit_nan"] = space_km
         values["nearest_hw_excd_HI_admit_nan"] = excd_val
 
-    for pct, hi_ctx in hi_contexts.items():
-        s = hi_ctx["suffix"]
-        values[f"HSCI_HI_30d_prior_{s}"] = sum_hsci_prior(hi_ctx["hsci_by_date"], d0, 30)
-        if zm_hi is not None:
-            values[f"event_duration_HI_admit_anchor_{s}"] = anchored_heat_duration_with_grace(hi_ctx, zm_hi, d0)
-            values[f"days_heatwave_HI_30d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 30)
-            values[f"days_heatwave_HI_21d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 21)
-            values[f"days_heatwave_HI_14d_prior_{s}"] = count_zip_heat_days(hi_ctx, zm_hi, d0, 14)
+    values["HSCI_HI_30d_prior"] = sum_hsci_prior(hi_context["hsci_by_date"], d0, 30)
+    if zm_hi is not None:
+        values["event_duration_HI_admit_anchor"] = anchored_heat_duration_with_grace(hi_context, zm_hi, d0)
+        values["days_heatwave_HI_30d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 30)
+        values["days_heatwave_HI_21d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 21)
+        values["days_heatwave_HI_14d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 14)
 
     hsci_t_prior = {days: 0.0 for days in PRIOR_WINDOWS}
     hsci_hi_prior = {days: 0.0 for days in PRIOR_WINDOWS}
@@ -528,7 +526,7 @@ def compute_patient_values(i, zc, d0, context=None):
             for days in active_windows:
                 hsci_hi_prior[days] += v
 
-        vhi = read_zip_avg(legacy_hi["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, dd, False) if zm_hi is not None else np.nan
+        vhi = read_zip_avg(hi_context["mag_nc"], "HI_EXCDMAG", idx_daily_hi, zm_hi, dd, False) if zm_hi is not None else np.nan
         if not np.isnan(vhi):
             acc_excd_hi += vhi
             if offset >= -3:
@@ -569,6 +567,12 @@ def patient_chunks(rows, chunk_size):
 
 def main() -> None:
     args = parse_args()
+    paths = resolve_percentile_paths(args.pct, args.hw_nc_t, args.hw_nc_hi, args.mag_nc_hi, args.out_csv)
+    pct = int(paths["pct"])
+    hw_nc_t = str(paths["hw_nc_t"])
+    hw_nc_hi = str(paths["hw_nc_hi"])
+    mag_nc_hi = str(paths["mag_nc_hi"])
+    out_csv = str(paths["out_csv"])
 
     p = pd.read_csv(args.patient_csv, dtype={"zip5": "string", "ADMIT_DATE": "string", "DISCHARGE_DATE": "string"})
     unnamed_cols = [c for c in p.columns if str(c).strip().lower().startswith("unnamed:")]
@@ -586,19 +590,18 @@ def main() -> None:
     needed_zips = sorted(p["zip5"].dropna().astype(str).str.strip().unique().tolist())
     print(f"Unique zip codes needed: {len(needed_zips)}")
 
-    hi_pcts = parse_pcts(args.hi_pcts)
-    hi_contexts = {pct: load_hi_context(pct, args) for pct in hi_pcts}
-    legacy_pct = 90 if 90 in hi_contexts else hi_pcts[0]
-    legacy_hi = hi_contexts[legacy_pct]
+    hi_context = load_hi_context(pct, mag_nc_hi, hw_nc_hi)
 
-    hw_time_t, hw_dates_t, hw_hsci_t = read_time_and_hsci(args.hw_nc_t)
-    lat_grid, lon_grid = read_lat_lon(legacy_hi["mag_nc"])
-    lat_grid_t, lon_grid_t = read_lat_lon(args.hw_nc_t)
-    dates_daily_hi = legacy_hi["dates_daily"]
-    print(f"Daily HI file P{legacy_pct}: {len(dates_daily_hi)} MJJAS days")
-    print(f"HW days T     : {len(hw_time_t)} days")
-    for pct, ctx in hi_contexts.items():
-        print(f"HW days HI P{pct}: {len(ctx['hw_dates'])} days")
+    if not Path(hw_nc_t).is_file():
+        raise FileNotFoundError(f"Missing HSCI file for P{pct}: {hw_nc_t}")
+    hw_time_t, hw_dates_t, hw_hsci_t = read_time_and_hsci(hw_nc_t)
+    lat_grid, lon_grid = read_lat_lon(hi_context["mag_nc"])
+    lat_grid_t, lon_grid_t = read_lat_lon(hw_nc_t)
+    dates_daily_hi = hi_context["dates_daily"]
+    print(f"Hospital exposure percentile: P{pct}")
+    print(f"Daily HI file P{pct}: {len(dates_daily_hi)} MJJAS days")
+    print(f"HW days T P{pct}: {len(hw_time_t)} days")
+    print(f"HW days HI P{pct}: {len(hi_context['hw_dates'])} days")
 
     print("Building ZIP masks for HI grid...")
     masks_hi = build_zip_masks(args, needed_zips, lat_grid, lon_grid)
@@ -608,11 +611,11 @@ def main() -> None:
     else:
         print("Building ZIP masks for T grid...")
         masks_t = build_zip_masks(args, needed_zips, lat_grid_t, lon_grid_t)
-    idx_daily_hi = legacy_hi["idx_daily"]
+    idx_daily_hi = hi_context["idx_daily"]
     idx_hw_t = make_date_index(hw_dates_t)
 
     hsci_t_by_date = {pd.Timestamp(d).normalize(): float(v) for d, v in zip(hw_dates_t, hw_hsci_t)}
-    hsci_hi_by_date = legacy_hi["hsci_by_date"]
+    hsci_hi_by_date = hi_context["hsci_by_date"]
 
     cols = {
         "HSCI_T_admit": np.full(n_p, np.nan),
@@ -636,22 +639,19 @@ def main() -> None:
         cols[f"days_excd_HI_{days}d_prior"] = np.full(n_p, np.nan)
         cols[f"max_excd_T_{days}d_prior"] = np.full(n_p, np.nan)
         cols[f"max_excd_HI_{days}d_prior"] = np.full(n_p, np.nan)
-    for pct, ctx in hi_contexts.items():
-        s = ctx["suffix"]
-        cols[f"HSCI_HI_30d_prior_{s}"] = np.full(n_p, np.nan)
-        cols[f"event_duration_HI_admit_anchor_{s}"] = np.full(n_p, np.nan)
-        cols[f"days_heatwave_HI_30d_prior_{s}"] = np.full(n_p, np.nan)
-        cols[f"days_heatwave_HI_21d_prior_{s}"] = np.full(n_p, np.nan)
-        cols[f"days_heatwave_HI_14d_prior_{s}"] = np.full(n_p, np.nan)
+    cols["HSCI_HI_30d_prior"] = np.full(n_p, np.nan)
+    cols["event_duration_HI_admit_anchor"] = np.full(n_p, np.nan)
+    cols["days_heatwave_HI_30d_prior"] = np.full(n_p, np.nan)
+    cols["days_heatwave_HI_21d_prior"] = np.full(n_p, np.nan)
+    cols["days_heatwave_HI_14d_prior"] = np.full(n_p, np.nan)
 
     worker_context = {
         "args": {
-            "hw_nc_t": args.hw_nc_t,
+            "hw_nc_t": hw_nc_t,
         },
         "masks_hi": masks_hi,
         "masks_t": masks_t,
-        "hi_contexts": hi_contexts,
-        "legacy_hi": legacy_hi,
+        "hi_context": hi_context,
         "hsci_t_by_date": hsci_t_by_date,
         "hsci_hi_by_date": hsci_hi_by_date,
         "idx_hw_t": idx_hw_t,
@@ -690,6 +690,7 @@ def main() -> None:
 
     for name, values in cols.items():
         p[name] = values
+    p["heat_threshold_percentile"] = pct
 
     p["admit_year"] = admit_dt.dt.year
     p["admit_month"] = admit_dt.dt.month
@@ -724,13 +725,13 @@ def main() -> None:
     p["excd_T_7d_prior_cat"] = make_exposure_category(p["zcta_EXCD_T_7d_prior"])
     p["excd_HI_7d_prior_cat"] = make_exposure_category(p["zcta_EXCD_HI_7d_prior"])
 
-    p.to_csv(args.out_csv, index=False)
+    p.to_csv(out_csv, index=False)
     if args.out_pickle:
         import pickle
 
         with Path(args.out_pickle).open("wb") as f:
             pickle.dump(p, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"\nDone. Saved {args.out_csv}")
+    print(f"\nDone. Saved P{pct} output: {out_csv}")
 
 
 if __name__ == "__main__":

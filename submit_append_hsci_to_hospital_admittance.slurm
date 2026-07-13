@@ -18,6 +18,7 @@ PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 ZIP_BUFFER_CELLS=${ZIP_BUFFER_CELLS:-1}
 APPEND_WORKERS=${APPEND_WORKERS:-64}
 APPEND_CHUNK_SIZE=${APPEND_CHUNK_SIZE:-100}
+PCTS=${PCTS:-80,90,95}
 AUTO_GIT_PULL=${AUTO_GIT_PULL:-0}
 
 unset PYTHONHOME PYTHONPATH
@@ -36,9 +37,15 @@ export PYTHONPATH="$CODE_DIR"
 "$PY" -m py_compile "$CODE_DIR/heatindex/utils.py" "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py"
 
 cd "$DATA_DIR"
-"$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
-  --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
-  --workers "$APPEND_WORKERS" \
-  --chunk-size "$APPEND_CHUNK_SIZE"
+IFS=',' read -r -a PCT_LIST <<< "$PCTS"
+for PCT in "${PCT_LIST[@]}"; do
+  PCT="${PCT//[[:space:]]/}"
+  echo "Appending hospital exposures for P${PCT}"
+  "$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
+    --pct "$PCT" \
+    --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
+    --workers "$APPEND_WORKERS" \
+    --chunk-size "$APPEND_CHUNK_SIZE"
+done
 
-echo "HEATINDEX HOSPITAL ADMITTANCE HSCI APPEND COMPLETE"
+echo "HEATINDEX PERCENTILE-SPECIFIC HOSPITAL ADMITTANCE HSCI APPEND COMPLETE"

@@ -16,7 +16,7 @@ CODE_DIR=${CODE_DIR:-/blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code}
 DATA_DIR=${DATA_DIR:-/blue/nessie/mostafarezaali/400M_PRISM}
 PY=${PY:-/blue/nessie/mostafarezaali/.conda/envs/torch_b200/bin/python}
 
-PCTS=${PCTS:-90,95}
+PCTS=${PCTS:-80,90,95}
 T2M_VAR=${T2M_VAR:-tmax}
 WORKERS=${WORKERS:-64}
 THRESHOLD_WORKERS=${THRESHOLD_WORKERS:-16}
@@ -97,12 +97,16 @@ for PCT in "${PCT_LIST[@]}"; do
     --write-workers "$DETECT_WRITE_WORKERS"
 done
 
-echo "Stage 3/3: append HSCI exposure metrics to hospital admittance"
-"$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
-  --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
-  --hi-pcts "$PCTS" \
-  --workers "$APPEND_WORKERS" \
-  --chunk-size "$APPEND_CHUNK_SIZE"
+echo "Stage 3/3: append percentile-specific HSCI exposure metrics to hospital admittance"
+for PCT in "${PCT_LIST[@]}"; do
+  PCT="${PCT//[[:space:]]/}"
+  echo "  Appending hospital exposures for P${PCT}"
+  "$PY" -u "$CODE_DIR/scripts/append_hsci_to_hospital_admittance.py" \
+    --pct "$PCT" \
+    --zip-buffer-cells "$ZIP_BUFFER_CELLS" \
+    --workers "$APPEND_WORKERS" \
+    --chunk-size "$APPEND_CHUNK_SIZE"
+done
 
 rm -rf "$DATA_DIR/_HI_tmp" "$DATA_DIR/PRISM_cache"
 

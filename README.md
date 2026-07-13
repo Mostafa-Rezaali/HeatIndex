@@ -67,17 +67,29 @@ python scripts/plot_monthly_hsci.py --hsci-nc EXCD_MJJAS_HWdays_90.nc --group-by
 Append exposure metrics to hospital-admission records:
 
 ```powershell
-python scripts/append_hsci_to_hospital_admittance.py
+python scripts/append_hsci_to_hospital_admittance.py --pct 80
+python scripts/append_hsci_to_hospital_admittance.py --pct 90
+python scripts/append_hsci_to_hospital_admittance.py --pct 95
 ```
 
-The hospital output includes percentile-specific HI additions for each value in
-`--hi-pcts` (default `90,95`):
+Each run reads matching T-based HSCI, HI-based HSCI-H, and daily HI magnitude
+NetCDF files for exactly one percentile and writes a separate hospital CSV:
 
-- `HSCI_HI_30d_prior_p90`, `HSCI_HI_30d_prior_p95`
-- `event_duration_HI_admit_anchor_p90`, `event_duration_HI_admit_anchor_p95`
-- `days_heatwave_HI_30d_prior_p90`, `days_heatwave_HI_30d_prior_p95`
-- `days_heatwave_HI_21d_prior_p90`, `days_heatwave_HI_21d_prior_p95`
-- `days_heatwave_HI_14d_prior_p90`, `days_heatwave_HI_14d_prior_p95`
+- `Hospital_Admittance_with_HSCI_80.csv`
+- `Hospital_Admittance_with_HSCI_90.csv`
+- `Hospital_Admittance_with_HSCI_95.csv`
+
+The three outputs have the same column schema. The
+`heat_threshold_percentile` column records the climatological threshold used
+to generate every HSCI, HSCI-H, exceedance, duration, count, and maximum in
+that file; downstream indicators are then derived from those matching
+percentile-specific exposures. The 14-, 21-, and 30-day HI variables are named:
+
+- `HSCI_HI_30d_prior`
+- `event_duration_HI_admit_anchor`
+- `days_heatwave_HI_30d_prior`
+- `days_heatwave_HI_21d_prior`
+- `days_heatwave_HI_14d_prior`
 
 For both T-based HSCI and HI-based HSCI-H, the output also includes cumulative
 HSCI, number of ZIP exceedance days, and maximum ZIP exceedance over the 1-,
@@ -141,5 +153,13 @@ Defaults can be overridden at submission time, for example:
 
 ```bash
 cd "$DATA_DIR"
-PCTS=90,95 T2M_VAR=tmax WORKERS=64 THRESHOLD_WORKERS=16 SLICE_WORKERS=64 DETECT_WORKERS=64 DETECT_WRITE_WORKERS=64 APPEND_WORKERS=64 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
+PCTS=80,90,95 T2M_VAR=tmax WORKERS=64 THRESHOLD_WORKERS=16 SLICE_WORKERS=64 DETECT_WORKERS=64 DETECT_WRITE_WORKERS=64 APPEND_WORKERS=64 sbatch "$CODE_DIR/submit_heatindex_pipeline.slurm"
+```
+
+When all percentile-specific NetCDF files already exist, regenerate only the
+three hospital CSV outputs with:
+
+```bash
+cd /blue/nessie/mostafarezaali/400M_PRISM
+PCTS=80,90,95 sbatch /blue/nessie/mostafarezaali/400M_PRISM/HeatIndex_code/submit_append_hsci_to_hospital_admittance.slurm
 ```
