@@ -43,8 +43,12 @@ python scripts/inspect_mat_variables.py /blue/nessie/mostafarezaali/400M_PRISM/D
 
 This stage uses temporary Python cache files under `_HI_tmp` while running,
 deletes each day's downloaded PRISM zip files and extracted rasters after that
-day is processed, and removes the Python cache after successful NetCDF output
-creation unless `--keep-python-cache` is set.
+day is processed. Python caches under `_HI_tmp` and `PRISM_cache` are kept by
+default so later percentile runs reuse them; pass `--purge-cache` to remove
+them after a successful run (`--keep-python-cache` is now a deprecated no-op).
+Existing MATLAB v7.3 daily caches (`HI_yyyymmdd.mat` with `HI`, `T2`, `tvar`)
+found in the tmp directory are converted to `.npz` in place of downloading and
+are never deleted.
 
 Detect T-based HSCI and HI-based HSCI-H:
 
@@ -90,6 +94,13 @@ percentile-specific exposures. The 14-, 21-, and 30-day HI variables are named:
 - `days_heatwave_HI_30d_prior`
 - `days_heatwave_HI_21d_prior`
 - `days_heatwave_HI_14d_prior`
+- `days_excd_HI_30d_prior`
+- `days_excd_HI_21d_prior`
+- `days_excd_HI_14d_prior`
+
+`days_heatwave_HI_*` counts a day only when it is a domain heatwave day in the
+HW-days file AND the ZCTA-local exceedance is positive. `days_excd_HI_*`
+counts any day with positive ZCTA-local exceedance, with no domain condition.
 
 For both T-based HSCI and HI-based HSCI-H, the output also includes cumulative
 HSCI, number of ZIP exceedance days, and maximum ZIP exceedance over the 1-,
@@ -111,7 +122,8 @@ is absent or precedes admission. The `invalid_length_of_stay` flag identifies
 the latter source-data condition.
 
 The anchored event duration counts ZIP-level HI exceedance days in the run
-ending on the admit day, scanning backward up to 30 days and allowing one
+ending on the day before admission (the admit day itself is never counted),
+scanning backward up to 30 days and allowing one
 non-exceedance grace day without counting the grace day as a heat day.
 
 All scripts default to the same filenames used in the MATLAB code and can be

@@ -70,8 +70,7 @@ for PCT in "${PCT_LIST[@]}"; do
     --workers "$WORKERS" \
     --threshold-workers "$THRESHOLD_WORKERS" \
     --slice-workers "$SLICE_WORKERS" \
-    --block-rows "$BLOCK_ROWS" \
-    --keep-python-cache
+    --block-rows "$BLOCK_ROWS"
 done
 
 echo "Stage 2/3: detect HSCI and HSCI-H heatwave days"

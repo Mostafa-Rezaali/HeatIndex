@@ -322,6 +322,31 @@ def sum_hsci_prior(hsci_by_date, admit_date, days: int) -> float:
 
 
 def count_zip_heat_days(ctx, zm: ZipGridMask, admit_date, days: int) -> int:
+    """Count heatwave days experienced by the ZIP in the prior window.
+
+    A day counts only if BOTH conditions hold:
+      (a) the date is a domain heatwave day, i.e. it appears in the HW-days
+          file for this percentile (keys of ctx["hsci_by_date"]), AND
+      (b) the ZCTA-local exceedance from the daily MAG file is finite and > 0.
+    """
+    count = 0
+    for offset in range(-days, 0):
+        dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
+        if dd not in ctx["hsci_by_date"]:
+            continue
+        v = read_zip_avg(ctx["mag_nc"], "HI_EXCDMAG", ctx["idx_daily"], zm, dd, False)
+        if np.isfinite(v) and v > 0:
+            count += 1
+    return count
+
+
+def count_zip_excd_days(ctx, zm: ZipGridMask, admit_date, days: int) -> int:
+    """Count days with any positive ZCTA-local exceedance in the prior window.
+
+    Local-only variant of count_zip_heat_days: no domain heatwave condition,
+    so a single locally hot day counts even if it never passed the
+    spatial/min-area heatwave rules.
+    """
     count = 0
     for offset in range(-days, 0):
         dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
@@ -332,9 +357,16 @@ def count_zip_heat_days(ctx, zm: ZipGridMask, admit_date, days: int) -> int:
 
 
 def anchored_heat_duration_with_grace(ctx, zm: ZipGridMask, admit_date, max_back_days: int = 30, grace_days: int = 1) -> int:
+    """Length of the ZIP-level heat streak ending the day before admission.
+
+    Scans backward from admit-1 (never the admit day itself, so the value
+    measures prior exposure only) up to max_back_days. A non-heat day is
+    tolerated only while grace_used < grace_days; grace days are not counted
+    as heat days.
+    """
     heat_days = 0
     grace_used = 0
-    for offset in range(0, -max_back_days - 1, -1):
+    for offset in range(-1, -max_back_days - 1, -1):
         dd = pd.Timestamp(admit_date).normalize() + pd.Timedelta(days=offset)
         v = read_zip_avg(ctx["mag_nc"], "HI_EXCDMAG", ctx["idx_daily"], zm, dd, False)
         is_heat = np.isfinite(v) and v > 0
@@ -492,6 +524,9 @@ def compute_patient_values(i, zc, d0, context=None):
         values["days_heatwave_HI_30d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 30)
         values["days_heatwave_HI_21d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 21)
         values["days_heatwave_HI_14d_prior"] = count_zip_heat_days(hi_context, zm_hi, d0, 14)
+        values["days_excd_HI_30d_prior"] = count_zip_excd_days(hi_context, zm_hi, d0, 30)
+        values["days_excd_HI_21d_prior"] = count_zip_excd_days(hi_context, zm_hi, d0, 21)
+        values["days_excd_HI_14d_prior"] = count_zip_excd_days(hi_context, zm_hi, d0, 14)
 
     hsci_t_prior = {days: 0.0 for days in PRIOR_WINDOWS}
     hsci_hi_prior = {days: 0.0 for days in PRIOR_WINDOWS}
@@ -644,6 +679,9 @@ def main() -> None:
     cols["days_heatwave_HI_30d_prior"] = np.full(n_p, np.nan)
     cols["days_heatwave_HI_21d_prior"] = np.full(n_p, np.nan)
     cols["days_heatwave_HI_14d_prior"] = np.full(n_p, np.nan)
+    cols["days_excd_HI_30d_prior"] = np.full(n_p, np.nan)
+    cols["days_excd_HI_21d_prior"] = np.full(n_p, np.nan)
+    cols["days_excd_HI_14d_prior"] = np.full(n_p, np.nan)
 
     worker_context = {
         "args": {

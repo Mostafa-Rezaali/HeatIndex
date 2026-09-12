@@ -41,7 +41,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold-workers", type=int, default=1)
     p.add_argument("--slice-workers", type=int, default=1)
     p.add_argument("--block-rows", type=int, default=64)
-    p.add_argument("--keep-python-cache", action="store_true")
+    p.add_argument("--purge-cache", action="store_true", help="Remove tmp/cache dirs after a successful run (caches are kept by default).")
+    p.add_argument("--keep-python-cache", action="store_true", help="Deprecated no-op; caches are now kept by default.")
     return p.parse_args()
 
 
@@ -95,17 +96,52 @@ def cleanup_day(*paths: Path) -> None:
             pass
 
 
+def convert_legacy_mat(mat_path: Path, npz_path: Path, expected_tvar: str) -> bool:
+    """Convert a MATLAB v7.3 daily cache (HI, T2, tvar) to the npz format.
+
+    MATLAB v7.3 files are HDF5 with column-major storage, so h5py returns the
+    [nlat x nlon] arrays transposed; they are transposed back here. The char
+    variable tvar is stored as uint16 codes and is decoded to str. Returns
+    False (writing nothing) when the file is unreadable, a required variable
+    is missing, or tvar does not match expected_tvar.
+    """
+    import h5py
+
+    try:
+        with h5py.File(mat_path, "r") as h5:
+            if not all(name in h5 for name in ("HI", "T2", "tvar")):
+                return False
+            tvar_raw = np.asarray(h5["tvar"]).ravel()
+            if tvar_raw.dtype.kind in {"u", "i"}:
+                tvar = "".join(chr(int(c)) for c in tvar_raw)
+            else:
+                tvar = "".join(str(c) for c in tvar_raw)
+            if tvar != str(expected_tvar):
+                return False
+            hi = np.asarray(h5["HI"], dtype=np.float32).T
+            t2 = np.asarray(h5["T2"], dtype=np.float32).T
+    except (OSError, KeyError, ValueError):
+        return False
+    save_daily_cache(npz_path, hi, t2, tvar)
+    return True
+
+
 def build_one_day(d: datetime, args: argparse.Namespace, cache_root: Path, tmp_root: Path) -> None:
     ds = d.strftime("%Y%m%d")
     out_cache_day = tmp_root / f"HI_{ds}.npz"
     if daily_cache_reusable(out_cache_day, args.t2m_var):
         return
-    for stale in (out_cache_day, tmp_root / f"HI_{ds}.mat"):
-        try:
-            if stale.is_file():
-                stale.unlink()
-        except OSError:
-            pass
+    try:
+        if out_cache_day.is_file():
+            out_cache_day.unlink()
+    except OSError:
+        pass
+
+    # Reuse an existing MATLAB daily cache instead of re-downloading PRISM.
+    # The .mat is left in place whether or not conversion succeeds.
+    legacy_mat = tmp_root / f"HI_{ds}.mat"
+    if legacy_mat.is_file() and convert_legacy_mat(legacy_mat, out_cache_day, args.t2m_var):
+        return
 
     u_t2 = f"{args.base_url}/{args.t2m_var}/daily/{d.year}/prism_{args.t2m_var}_us_30s_{ds}.zip"
     u_td = f"{args.base_url}/tdmean/daily/{d.year}/prism_tdmean_us_30s_{ds}.zip"
@@ -436,7 +472,7 @@ def main() -> None:
         print(f"HI MAG : {out_mag_hi}")
     if build_t_mag:
         print(f"T  MAG : {out_mag_t}")
-    if not args.keep_python_cache:
+    if args.purge_cache:
         cleanup_day(tmp_root, cache_root)
 
 

@@ -6,3 +6,4 @@ rasterio
 requests
 scikit-image
 matplotlib
+h5py
